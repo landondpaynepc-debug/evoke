@@ -18,6 +18,8 @@ CATEGORY = 1558547311590903831
 TRANSCRIPTS = 1558547308054839326
 STAFF = 1565166580411924610
 FORMER_STAFF = 1560752530366144543
+WELCOME = 1454719357723869281
+WELCOME_EMOJI = "<a:pfp:1565463462388441138>"
 SUPPORT = 1566118218605662409
 REQUIREMENTS = 1566120622294048819
 BANNER = ROOT / "banner.webp"
@@ -25,8 +27,7 @@ PREFIX = "evoke:v1:"
 log = logging.getLogger("evoke")
 ticket_lock = asyncio.Lock()
 publish_lock = asyncio.Lock()
-client = discord.Client(intents=discord.Intents(guilds=True),
-                        allowed_mentions=discord.AllowedMentions.none())
+client: discord.Client
 
 
 def button(label, action, style=discord.ButtonStyle.secondary):
@@ -566,7 +567,6 @@ def confirmation():
     return panel("## Close ticket?", "Confirming saves a transcript for staff and permanently deletes this channel.", ui.ActionRow(button("Delete ticket", "delete", discord.ButtonStyle.danger)))
 
 
-@client.event
 async def on_interaction(i):
     cid = (i.data or {}).get("custom_id", "")
     if not cid.startswith(PREFIX):
@@ -661,11 +661,14 @@ async def update_open_ticket_access():
                 log.exception("Could not update staff access for ticket %s", channel.id)
 
 
-@client.event
 async def on_ready():
     async with publish_lock:
         guild = client.get_guild(GUILD_ID)
         if guild and guild.me:
+            target = guild.get_channel(WELCOME)
+            log.info("Welcome configuration: member_events=%s send=%s fallback_join_messages=%s",
+                     client.intents.members, bool(target and target.permissions_for(guild.me).send_messages),
+                     bool(guild.system_channel and guild.system_channel_flags.join_notifications and guild.system_channel.permissions_for(guild.me).view_channel))
             error = acceptance_role_error(guild, [guild.get_role(r) for r in ACCEPTANCE_ROLES])
             if error:
                 log.warning("Careers role configuration: %s", error)
@@ -695,15 +698,57 @@ async def on_ready():
     log.info("Connected as %s", client.user)
 
 
+def welcome_panel(member, count):
+    view = ui.LayoutView(timeout=None)
+    count_label = f"Members: {count:,}" if count is not None else "Members"
+    view.add_item(ui.Container(
+        ui.TextDisplay(f"{WELCOME_EMOJI} Welcome {member.mention} to **Evoke Esports™**! "
+                       "Check out the dashboard to get support or apply for a roster."),
+        ui.ActionRow(ui.Button(label=count_label, disabled=True, custom_id="evoke:member-count"),
+                     ui.Button(label="Dashboard", emoji="📋", url=f"https://discord.com/channels/{GUILD_ID}/{SUPPORT}"))))
+    return view
+
+
+async def greet(member, count):
+    channel = member.guild.get_channel(WELCOME)
+    if not isinstance(channel, discord.TextChannel):
+        log.error("Welcome channel %s unavailable", WELCOME)
+        return
+    await channel.send(view=welcome_panel(member, count),
+                       allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False))
+
+
+async def on_member_join(member):
+    if member.guild.id == GUILD_ID:
+        await greet(member, member.guild.member_count)
+
+
+async def on_message(message):
+    if (not client.intents.members and message.guild and message.guild.id == GUILD_ID
+            and message.type == discord.MessageType.new_member):
+        snapshot = await client.fetch_guild(GUILD_ID, with_counts=True)
+        await greet(message.author, snapshot.approximate_member_count)
+
+
 async def health(request):
     return web.Response(text="Evoke Systems online" if client.is_ready() else "Connecting to Discord",
                         status=200 if client.is_ready() else 503)
 
 
 async def main():
+    global client
     token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
     if not token:
         raise SystemExit("Set DISCORD_TOKEN in the Render service environment.")
+    async with discord.Client(intents=discord.Intents.none()) as probe:
+        await probe.login(token)
+        flags = probe.application_flags
+        member_events = flags.gateway_guild_members or flags.gateway_guild_members_limited
+    intents = discord.Intents(guilds=True, members=member_events, guild_messages=not member_events)
+    client = discord.Client(intents=intents, allowed_mentions=discord.AllowedMentions.none(),
+                            chunk_guilds_at_startup=False)
+    for event in (on_interaction, on_ready, on_member_join, on_message):
+        client.event(event)
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
