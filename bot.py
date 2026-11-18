@@ -252,11 +252,169 @@ async def career_action(i, action):
     return f"Application {action.lower()} and archived. {delivery}"
 
 
+# Application state lives in the bot's DM and review messages so drafts survive restarts.
+dm_review_lock = asyncio.Lock()
+
+
+def dm_buttons(message):
+    return [item.custom_id for top in message.components for row in getattr(top, "children", [])
+            for item in getattr(row, "children", []) if getattr(item, "custom_id", None)]
+
+
+def saved_answers(message):
+    return [item.content for item in message.components[0].children if isinstance(item, discord.TextDisplay)
+            and any(item.content.startswith(f"**{n}. ") for n in range(1, 7))]
+
+
+async def send_dm_application(i):
+    dm = await i.user.create_dm()
+    async with dm_review_lock:
+        async for msg in dm.history(limit=None):
+            ids = dm_buttons(msg) if msg.author.id == client.user.id else []
+            if any(x in (PREFIX + "applydm:first", PREFIX + "applydm:second") for x in ids) or (ids and any(
+                t == "# Trial Staff application submitted" for cmp in msg.components for t in component_text(cmp)
+            )):
+                return f"Your application is already in your DMs. [Open application]({msg.jump_url})"
+            if msg.author.id == client.user.id and any(
+                t == "# Trial Staff decision" for cmp in msg.components for t in component_text(cmp)
+            ):
+                break
+        msg = await dm.send(view=panel("# Evoke Careers", "## Apply for Trial Staff",
+                            "Start with four questions about yourself. Then answer two staff scenarios and submit.",
+                            ui.ActionRow(button("Start application", "applydm:first", discord.ButtonStyle.primary))), file=upload())
+    return f"I sent your application by DM. [Open application]({msg.jump_url})"
+
+
+def review_view(owner, draft, answers, state="Pending", reviewer=None):
+    suffix = f":{owner}:{draft}"
+    items = ["# Trial Staff application", f"**Applicant** <@{owner}> · **Status** {state}",
+             f"Application {draft}", *answers]
+    actions = []
+    if state == "Pending":
+        actions.extend([button("Accept", "reviewdm:Accepted" + suffix, discord.ButtonStyle.success),
+                        button("Deny", "reviewdm:Denied" + suffix, discord.ButtonStyle.danger)])
+    elif state == "Assigning roles":
+        actions.append(button("Retry acceptance", f"reviewdm:retry{suffix}:{reviewer}"))
+    if reviewer:
+        items.append(f"**Reviewed by** <@{reviewer}>")
+    actions.append(button("Message applicant", "reviewdm:contact" + suffix))
+    return panel(*items, ui.ActionRow(*actions))
+
+
+def chat_form(action):
+    modal = ui.Modal(title="Application message", custom_id=PREFIX + action)
+    modal.add_item(ui.Label(text="Your message", component=ui.TextInput(custom_id="body",
+                           style=discord.TextStyle.paragraph, required=True, max_length=1500)))
+    return modal
+
+
+async def dm_application_action(i, action):
+    parts = action.split(":")
+    verb = parts[1]
+    if verb in ("first", "second"):
+        modal = career_form(second=verb == "second")
+        modal.custom_id = PREFIX + f"applydm:save-{verb}:{i.message.id}"
+        await i.response.send_modal(modal)
+        return
+    if verb == "reply":
+        await i.response.send_modal(chat_form(f"applydm:send-reply:{parts[2]}"))
+        return
+    await i.response.defer(thinking=True)
+    async with dm_review_lock:
+        guild = client.get_guild(GUILD_ID)
+        if verb == "send-reply":
+            queue = await guild.fetch_channel(REVIEW_LOG)
+            review = await queue.fetch_message(int(parts[2]))
+            if not any(x.startswith(PREFIX + f"reviewdm:contact:{i.user.id}:") for x in dm_buttons(review)):
+                raise ValueError("This application belongs to another member.")
+            body = i.data["components"][0]["component"]["value"]
+            await review.reply(view=panel("## Applicant reply", f"<@{i.user.id}>", body), file=upload(), mention_author=False)
+            result = "Your reply was sent to the reviewers."
+        else:
+            msg = await i.channel.fetch_message(int(parts[2]))
+            stage = {"save-first": "first", "save-second": "second"}.get(verb)
+            if not stage or msg.author.id != client.user.id or PREFIX + "applydm:" + stage not in dm_buttons(msg):
+                raise ValueError("This step has already been completed.")
+            if stage == "first":
+                answers = career_answers(i, range(4))
+                await msg.edit(view=panel("# Evoke Careers", *answers,
+                    ui.ActionRow(button("Answer scenarios & submit", "applydm:second", discord.ButtonStyle.primary))))
+                result = f"Your first four answers are saved. [Continue with the two scenarios]({msg.jump_url})."
+            else:
+                answers = saved_answers(msg) + career_answers(i, range(4, 6))
+                if len(answers) != 6:
+                    raise ValueError("Your draft is missing answers. Please contact Evoke staff.")
+                queue = await guild.fetch_channel(REVIEW_LOG)
+                existing = None
+                async for entry in queue.history(limit=None, after=msg.created_at):
+                    if entry.author.id == client.user.id and PREFIX + f"reviewdm:contact:{i.user.id}:{msg.id}" in dm_buttons(entry):
+                        existing = entry
+                        break
+                review = existing or await queue.send(view=review_view(i.user.id, msg.id, answers), file=upload())
+                await msg.edit(view=panel("# Trial Staff application submitted", *answers,
+                    "The Evoke reviewers have your application. Your decision will arrive here.",
+                    ui.ActionRow(button("Message reviewers", f"applydm:reply:{review.id}"))))
+                result = "Your application has been submitted to Evoke staff."
+    await i.edit_original_response(content=result)
+
+
+async def review_dm_action(i, action):
+    if i.channel_id != REVIEW_LOG or not any(role.id == REVIEWERS for role in i.user.roles):
+        await i.response.send_message("Only Evoke application reviewers can do that.", ephemeral=True)
+        return
+    _, verb, owner_id, draft_id, *extra = action.split(":")
+    owner, draft = int(owner_id), int(draft_id)
+    if verb == "contact":
+        await i.response.send_modal(chat_form(f"reviewdm:send:{owner}:{draft}:{i.message.id}"))
+        return
+    await i.response.defer(thinking=True, ephemeral=True)
+    async with dm_review_lock:
+        if verb == "send":
+            message = await i.channel.fetch_message(int(extra[0]))
+            if PREFIX + f"reviewdm:contact:{owner}:{draft}" not in dm_buttons(message):
+                raise ValueError("The application could not be verified.")
+            body = i.data["components"][0]["component"]["value"]
+            user = await client.fetch_user(owner)
+            await user.send(view=panel("# Message from Evoke Careers", body,
+                ui.ActionRow(button("Reply to reviewers", f"applydm:reply:{message.id}"))), file=upload())
+            result = "Message delivered."
+        else:
+            message = await i.channel.fetch_message(i.message.id)
+            if PREFIX + action not in dm_buttons(message) or verb not in ("Accepted", "Denied", "retry"):
+                raise ValueError("This application already has a decision.")
+            if i.user.id == owner:
+                raise ValueError("Another reviewer must decide your application.")
+            answers = saved_answers(message)
+            reviewer = int(extra[0]) if verb == "retry" else i.user.id
+            outcome = "Accepted" if verb == "retry" else verb
+            if outcome == "Accepted":
+                if verb != "retry":
+                    await message.edit(view=review_view(owner, draft, answers, "Assigning roles", reviewer))
+                error = await grant_accepted_roles(i.guild, owner, reviewer)
+                if error:
+                    raise ValueError(error + " Use Retry acceptance when ready.")
+            await message.edit(view=review_view(owner, draft, answers, outcome, reviewer))
+            notice = f"Your Trial Staff application to **Evoke Esports** was **{outcome.lower()}**."
+            if outcome == "Accepted":
+                notice += " Your two staff roles have been assigned."
+            try:
+                user = await client.fetch_user(owner)
+                dm = await user.create_dm()
+                await dm.send(view=panel("# Trial Staff decision", notice), file=upload())
+                result = f"{outcome}. Decision delivered by DM."
+            except discord.HTTPException:
+                result = f"{outcome}. Discord could not deliver the applicant’s DM."
+            final = review_view(owner, draft, answers, outcome, reviewer)
+            final.children[0].add_item(ui.TextDisplay(result))
+            await message.edit(view=final)
+    await i.edit_original_response(content=result)
+
+
 def public_panel(channel):
     if channel == CAREERS:
         return panel("# Evoke Careers", "## Join the Trial Staff team\nHelp members get answers in tickets and keep the Discord welcoming.",
                      "**What we look for**\n• Active in the Discord\n• Professional and respectful\n• Willing to answer tickets and help members\n• Responsible and trustworthy",
-                     "Anyone can apply. Answer four questions about yourself, then two scenarios in your private application channel.",
+                     "Anyone can apply. Evoke Systems will DM you four questions about yourself and two staff scenarios.",
                      ui.ActionRow(button("Apply for Trial Staff", "career:apply", discord.ButtonStyle.primary)))
     if channel == SUPPORT:
         return panel("# Evoke Support", "Choose a category below and fill out its form. Your answers go into a private ticket with Evoke staff.",
@@ -411,10 +569,34 @@ def confirmation():
 @client.event
 async def on_interaction(i):
     cid = (i.data or {}).get("custom_id", "")
-    if i.guild_id != GUILD_ID or not cid.startswith(PREFIX):
+    if not cid.startswith(PREFIX):
         return
-    if cid == PREFIX + "career:apply" and i.channel_id == CAREERS:
-        await i.response.send_modal(career_form())
+    action = cid[len(PREFIX):]
+    staff_menu = (action == "choose" and i.channel_id == SUPPORT and i.data.get("values") == ["staff"])
+    start_dm = i.guild_id == GUILD_ID and ((action == "career:apply" and i.channel_id == CAREERS) or staff_menu)
+    in_dm = i.guild_id is None and action.startswith("applydm:")
+    in_review = i.guild_id == GUILD_ID and action.startswith("reviewdm:")
+    if start_dm or in_dm or in_review:
+        try:
+            if start_dm:
+                await i.response.defer(ephemeral=True, thinking=True)
+                result = await send_dm_application(i)
+                await i.edit_original_response(content=result)
+                if staff_menu:
+                    await i.message.edit(view=public_panel(SUPPORT))
+            elif in_dm:
+                await dm_application_action(i, action)
+            else:
+                await review_dm_action(i, action)
+        except (ValueError, discord.HTTPException) as error:
+            log.warning("Careers action %s failed: %s", action, type(error).__name__)
+            feedback = str(error) if isinstance(error, ValueError) else "Discord could not complete this action. Check DM privacy and the bot’s channel permissions, then retry."
+            if i.response.is_done():
+                await i.followup.send(feedback, ephemeral=bool(i.guild_id))
+            else:
+                await i.response.send_message(feedback, ephemeral=bool(i.guild_id))
+        return
+    if i.guild_id != GUILD_ID:
         return
     if cid == PREFIX + "career:continue":
         if not (getattr(i.channel, "topic", "") or "").startswith(f"evoke-career/{i.user.id}/draft/"):
@@ -425,7 +607,7 @@ async def on_interaction(i):
     if cid == PREFIX + "choose" and i.channel_id == SUPPORT:
         choices = i.data.get("values", [])
         if choices and choices[0] in REQUESTS:
-            await i.response.send_modal(career_form() if choices[0] == 'staff' else request_form(choices[0]))
+            await i.response.send_modal(request_form(choices[0]))
             # Re-render the shared menu with no default selection.
             await i.message.edit(view=public_panel(SUPPORT))
         return
