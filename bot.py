@@ -92,11 +92,13 @@ def public_panel(channel):
                  "Submit the form to open your private application ticket.")
 
 
-def controls(owner, claimant=0):
-    state = f"Claimed by <@{claimant}>" if claimant else "Waiting for staff"
-    return panel("# Evoke Support", f"**Opened by** <@{owner}>\n**Status** {state}",
-                 "Use this channel for follow-up details, screenshots, and replies to staff.",
-                 ui.ActionRow(button("Claim ticket", "claim"), button("Close ticket", "close", discord.ButtonStyle.danger)))
+def ticket_panel(owner, role, key, answers):
+    details = [f"**{label}**\n{discord.utils.escape_markdown(answer) or '—'}" for label, answer in answers]
+    name = REQUESTS[key][0] if key else "Evoke Support"
+    return panel(f"# {name}", f"{role.mention} · New ticket",
+                 f"**Opened by** <@{owner}>\n**Status** Waiting for staff",
+                 *details, ui.ActionRow(button("Claim ticket", "claim"),
+                                        button("Close ticket", "close", discord.ButtonStyle.danger)))
 
 
 def topic(owner, claimant=0, status="open"):
@@ -136,19 +138,11 @@ async def open_ticket(i, key=None):
         channel = await i.guild.create_text_channel(f"{key or 'support'}-{i.user.id}", category=category,
                                                     overwrites=overwrites, topic=topic(i.user.id))
         try:
-            if key:
-                details = [f"**{label}**\n{discord.utils.escape_markdown(answer) or '—'}" for label, answer in answers]
-                await channel.send(view=panel(f"## {REQUESTS[key][0]}", *details), file=upload())
-            await channel.send(view=controls(i.user.id), file=upload())
-        except discord.HTTPException:
-            await channel.delete(reason="Ticket controls failed to publish")
-            raise
-        try:
-            await channel.send(f"{role.mention} · New Evoke Support ticket",
+            await channel.send(view=ticket_panel(i.user.id, role, key, answers), file=upload(),
                                allowed_mentions=discord.AllowedMentions(roles=[role], users=False, everyone=False))
         except discord.HTTPException:
-            log.exception("Staff notification failed for ticket %s", channel.id)
-            return f"Your ticket is {channel.mention}. Staff can see it, but the notification failed."
+            await channel.delete(reason="Ticket panel failed to publish")
+            raise
         return f"Your ticket is ready in {channel.mention}."
 
 
@@ -213,7 +207,12 @@ async def manage_ticket(i, action):
             if claimant and claimant != i.user.id:
                 return f"This ticket was claimed by <@{claimant}>."
             await channel.edit(topic=topic(owner, i.user.id))
-            await i.message.edit(view=controls(owner, i.user.id))
+            view = ui.LayoutView.from_message(i.message)
+            for item in view.walk_children():
+                if isinstance(item, ui.TextDisplay) and item.content.startswith(f"**Opened by** <@{owner}>\n"):
+                    item.content = f"**Opened by** <@{owner}>\n**Status** Claimed by <@{i.user.id}>"
+                    break
+            await i.message.edit(view=view, allowed_mentions=discord.AllowedMentions.none())
             return "You claimed this ticket."
         if action in ("close", "confirm"):  # Older confirmations promised an archive.
             await i.edit_original_response(view=confirmation(), attachments=[upload()])
