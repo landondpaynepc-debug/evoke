@@ -12,6 +12,7 @@ import discord
 from aiohttp import web
 from discord import ui
 
+GUILD_ID = 1454719356226240517
 CATEGORY = 1558547311590903831
 STAFF = 1560752530366144543
 SUPPORT = 1566118218605662409
@@ -142,7 +143,7 @@ def confirmation():
 @client.event
 async def on_interaction(i):
     cid = (i.data or {}).get("custom_id", "")
-    if not i.guild or not cid.startswith(PREFIX):
+    if i.guild_id != GUILD_ID or not cid.startswith(PREFIX):
         return
     await i.response.defer(ephemeral=True, thinking=True)
     try:
@@ -162,6 +163,9 @@ async def on_ready():
         for channel_id in (SUPPORT, REQUIREMENTS):
             try:
                 channel = await client.fetch_channel(channel_id)
+                if not isinstance(channel, discord.TextChannel) or channel.guild.id != GUILD_ID:
+                    log.error("Panel channel %s must be a text channel in guild %s", channel_id, GUILD_ID)
+                    continue
                 view = public_panel(channel_id)
                 title = "# Evoke Support" if channel_id == SUPPORT else "# Join Evoke"
                 async for message in channel.history(limit=None):
