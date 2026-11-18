@@ -8,4 +8,15 @@ The bot publishes or refreshes its Components V2 support panel in `1566118218605
 
 Set DISCORD_TOKEN as a secret environment variable on the existing evoke service. Use the token for the Evoke Systems Discord application. Set the bot username in the Discord Developer Portal. Invite the bot with the bot scope. Grant View Channels, Read Message History, Send Messages, Attach Files, Manage Channels and Manage Roles where it manages tickets. Place its role above the staff role. Make the staff role mentionable or give the bot Mention Everyone in the ticket channels.
 
-Start command: `python bot.py`. Standard Python build command: `python -m pip install -r requirements.txt`. The included mix.exs also supports the existing service's `mix phx.digest` build command when Python and pip are installed. The service listens on PORT and serves readiness at /health. No privileged gateway intents required.
+### Existing Evoke private service
+
+This service uses Render’s Elixir runtime. Set both commands together.
+
+| Setting | Value |
+| --- | --- |
+| Build Command | `mix phx.digest` |
+| Start Command | `LD_LIBRARY_PATH="$PWD/.python-runtime/lib" ./.python-runtime/bin/python3 bot.py` |
+
+The build copies Python into the project, installs the bot dependencies and checks that the bundled interpreter can import them. The service listens on PORT and serves readiness at /health.
+
+For a native Python service, use `python -m pip install -r requirements.txt` to build and `python bot.py` to start. No privileged gateway intents required.
