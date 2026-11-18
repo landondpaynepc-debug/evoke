@@ -19,6 +19,7 @@ TRANSCRIPTS = 1558547308054839326
 STAFF = 1565166580411924610
 FORMER_STAFF = 1560752530366144543
 WELCOME = 1454719357723869281
+JOIN_ROLE = 1546383491665756311
 WELCOME_EMOJI = "<a:pfp:1565463462388441138>"
 SUPPORT = 1566118218605662409
 REQUIREMENTS = 1566120622294048819
@@ -665,6 +666,9 @@ async def on_ready():
     async with publish_lock:
         guild = client.get_guild(GUILD_ID)
         if guild and guild.me:
+            join_role = guild.get_role(JOIN_ROLE)
+            log.info("Join role %s assignable=%s", JOIN_ROLE,
+                     bool(join_role and guild.me.guild_permissions.manage_roles and join_role.is_assignable()))
             target = guild.get_channel(WELCOME)
             log.info("Welcome configuration: member_events=%s send=%s fallback_join_messages=%s",
                      client.intents.members, bool(target and target.permissions_for(guild.me).send_messages),
@@ -718,16 +722,33 @@ async def greet(member, count):
                        allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False))
 
 
+async def assign_join_role(member):
+    guild = member.guild
+    role = guild.get_role(JOIN_ROLE)
+    if role is None:
+        log.error("Join role %s is missing", JOIN_ROLE)
+        return
+    if role in member.roles:
+        return
+    try:
+        await member.add_roles(role, reason="Evoke member joined")
+    except discord.HTTPException:
+        log.exception("Could not assign join role %s to member %s", JOIN_ROLE, member.id)
+
+
 async def on_member_join(member):
     if member.guild.id == GUILD_ID:
+        await assign_join_role(member)
         await greet(member, member.guild.member_count)
 
 
 async def on_message(message):
     if (not client.intents.members and message.guild and message.guild.id == GUILD_ID
             and message.type == discord.MessageType.new_member):
+        member = message.author if isinstance(message.author, discord.Member) else await message.guild.fetch_member(message.author.id)
+        await assign_join_role(member)
         snapshot = await client.fetch_guild(GUILD_ID, with_counts=True)
-        await greet(message.author, snapshot.approximate_member_count)
+        await greet(member, snapshot.approximate_member_count)
 
 
 async def health(request):
