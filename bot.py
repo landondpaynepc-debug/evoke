@@ -79,6 +79,7 @@ def form_answers(i, key):
 
 CAREERS = 1566128366040645642
 REVIEWERS = 1572743601358635098
+ACCEPTANCE_ROLES = (1571298522685247598, STAFF)
 REVIEW_LOG = 1572744498729984030
 QUESTIONS = [
     "What staff experience do you have?",
@@ -153,6 +154,35 @@ async def career_start(i):
     return f"Your first four answers are saved. Open {ch.mention} and choose **Continue application**."
 
 
+def acceptance_role_error(guild, roles):
+    if not guild.me.guild_permissions.manage_roles:
+        return "Give Evoke Systems the Manage Roles permission."
+    for role in roles:
+        if role is None:
+            return "An acceptance role is missing from the server."
+        if not role.is_assignable():
+            return f"Check that Evoke Systems is above the assignable role {role.mention} in Server Settings."
+    return None
+
+
+async def grant_accepted_roles(guild, owner, reviewer):
+    try:
+        member = await guild.fetch_member(owner)
+    except discord.NotFound:
+        return "The applicant is no longer in this server."
+    current = {role.id for role in member.roles}
+    missing = [guild.get_role(role_id) for role_id in ACCEPTANCE_ROLES if role_id not in current]
+    if missing:
+        error = acceptance_role_error(guild, missing)
+        if error:
+            return error
+        try:
+            await member.add_roles(*missing, reason=f"Evoke Careers acceptance by {reviewer}", atomic=True)
+        except discord.Forbidden:
+            return "Discord blocked the grant. Check Manage Roles, the role order, and whether Evoke Systems can manage this member."
+    return None
+
+
 async def career_action(i, action):
     if action == "start":
         return await career_start(i)
@@ -189,6 +219,10 @@ async def career_action(i, action):
     archive = await i.guild.fetch_channel(REVIEW_LOG)
     if not isinstance(archive, discord.TextChannel) or archive.guild.id != GUILD_ID:
         return "Staff should check the reviewed-applications channel."
+    if action == "Accepted":
+        error = await grant_accepted_roles(i.guild, owner, reviewer)
+        if error:
+            return f"Acceptance is waiting for the roles. {error} Click Accept again to retry."
     # Recover the existing archive if a previous attempt stopped before finishing.
     marker = f"Application {ch.id}"
     logged = None
@@ -204,6 +238,8 @@ async def career_action(i, action):
     # Commit the outcome before optional notification so competing clicks cannot change it.
     await ch.edit(topic=prefix + f"{action}/{message_id}/{logged.id}")
     notice = f"Your Trial Staff application to **Evoke Esports** was **{action.lower()}**."
+    if action == "Accepted":
+        notice += " Your two staff roles have been assigned."
     try:
         user = await client.fetch_user(owner)
         await user.send(view=panel("# Evoke Careers", notice, f"Application channel: {ch.mention}"), file=upload())
@@ -446,6 +482,13 @@ async def update_open_ticket_access():
 @client.event
 async def on_ready():
     async with publish_lock:
+        guild = client.get_guild(GUILD_ID)
+        if guild and guild.me:
+            error = acceptance_role_error(guild, [guild.get_role(r) for r in ACCEPTANCE_ROLES])
+            if error:
+                log.warning("Careers role configuration: %s", error)
+            else:
+                log.info("Careers acceptance roles are assignable")
         await update_open_ticket_access()
         for channel_id in (SUPPORT, REQUIREMENTS, CAREERS):
             try:
