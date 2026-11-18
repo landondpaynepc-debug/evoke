@@ -40,11 +40,45 @@ def panel(*items):
     return view
 
 
+REQUESTS = {
+    "support": ("General Support", "🎧", ["What do you need help with?", "What have you tried?"]),
+    "player": ("Player Applications", "🎮", ["Epic username and tracker link", "Target roster and current PR", "Best recent tournament results"]),
+    "creator": ("Creator Applications", "📸", ["Main channel or social profile link", "Follower count and typical views", "What content would you make for Evoke?"]),
+    "business": ("Business Inquiries", "💼", ["Name and organization", "What are you proposing?", "Preferred timeline or contact method"]),
+    "report": ("Reporting", "❗", ["Who or what are you reporting?", "What happened and when?", "Evidence links (optional)"]),
+    "design": ("Designer Application", "🎨", ["Design specialty", "Portfolio or work samples", "Experience and weekly availability"]),
+    "staff": ("Staff Application", "🪪", ["Which staff position interests you?", "Describe your relevant experience", "Time zone and availability"]),
+    "creative": ("Creative Application", "🎬", ["Creative specialty", "Reel, portfolio, or sample projects", "Pitch a project you would make for Evoke"]),
+}
+
+
+def request_menu():
+    options = [discord.SelectOption(label=name, value=key, emoji=emoji)
+               for key, (name, emoji, _) in REQUESTS.items()]
+    return ui.Select(custom_id=PREFIX + "choose", placeholder="Choose a ticket category", options=options)
+
+
+def request_form(key):
+    name, _, fields = REQUESTS[key]
+    modal = ui.Modal(title=name, custom_id=PREFIX + "form:" + key)
+    for n, label in enumerate(fields):
+        entry = ui.TextInput(custom_id=f"answer-{n}", style=discord.TextStyle.paragraph,
+                             max_length=600, required=not label.endswith("(optional)"))
+        modal.add_item(ui.Label(text=label, component=entry))
+    return modal
+
+
+def form_answers(i, key):
+    fields = REQUESTS[key][2]
+    inputs = [row.get("component", {}) for row in i.data.get("components", [])]
+    values = {item["custom_id"]: item.get("value", "").strip() for item in inputs if item.get("type") == 4}
+    return [(label, values.get(f"answer-{n}", "")) for n, label in enumerate(fields)]
+
+
 def public_panel(channel):
     if channel == SUPPORT:
-        return panel("# Evoke Support", "Open a private ticket to reach the Evoke staff team. "
-                     "For roster applications, include your division, profile link, and recent results.",
-                     ui.ActionRow(button("Evoke Support", "open", discord.ButtonStyle.primary)))
+        return panel("# Evoke Support", "Choose a category below and fill out its form. Your answers go into a private ticket with Evoke staff.",
+                     ui.ActionRow(request_menu()))
     return panel("# Join Evoke", "## Competitive roster\nInclude **evk** in your username. "
                  "Find your division by Power Ranking Points (PR).",
                  "**Team Evoke**  ·  30,000+ PR\n**Evoke Competitive**  ·  10,000+ PR\n"
@@ -52,14 +86,14 @@ def public_panel(channel):
                  "**Grinders**  ·  500–2,999+ PR\n**Future**  ·  0–500 PR",
                  ui.Separator(), "## Content roster\n**Main Content**  ·  10,000 followers or subscribers\n"
                  "Include **evk** on your social profiles.",
-                 ui.Separator(), f"## How to apply\nGo to <#{SUPPORT}> and select **Evoke Support**. "
-                 "Tell us which roster you’re applying for, link your profile, and explain why you’re a good fit.")
+                 ui.Separator(), f"## How to apply\nGo to <#{SUPPORT}> and choose **Player Applications** or **Creator Applications**. "
+                 "Submit the form to open your private application ticket.")
 
 
 def controls(owner, claimant=0):
     state = f"Claimed by <@{claimant}>" if claimant else "Waiting for staff"
     return panel("# Evoke Support", f"**Opened by** <@{owner}>\n**Status** {state}",
-                 "Describe what you need below. Applying to Evoke? Include your roster and profile link.",
+                 "Use this channel for follow-up details, screenshots, and replies to staff.",
                  ui.ActionRow(button("Claim ticket", "claim"), button("Close ticket", "close", discord.ButtonStyle.danger)))
 
 
@@ -79,7 +113,7 @@ def upload():
     return discord.File(BANNER, filename="banner.webp")
 
 
-async def open_ticket(i):
+async def open_ticket(i, key=None):
     category = i.guild.get_channel(CATEGORY)
     role = i.guild.get_role(STAFF)
     if i.channel_id != SUPPORT or not isinstance(category, discord.CategoryChannel) or role is None:
@@ -90,13 +124,19 @@ async def open_ticket(i):
             data = ticket_data(channel)
             if data and data[0] == i.user.id and data[2] == "open":
                 return f"Your open ticket is {channel.mention}."
+        answers = form_answers(i, key) if key else []
+        if any(not answer and not label.endswith("(optional)") for label, answer in answers):
+            return "Please reopen the form and fill out each required field."
         allow = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True,
                                            attach_files=True)
         overwrites = {i.guild.default_role: discord.PermissionOverwrite(view_channel=False),
                       i.user: allow, role: allow, i.guild.me: allow}
-        channel = await i.guild.create_text_channel(f"support-{i.user.id}", category=category,
+        channel = await i.guild.create_text_channel(f"{key or 'support'}-{i.user.id}", category=category,
                                                     overwrites=overwrites, topic=topic(i.user.id))
         try:
+            if key:
+                details = [f"**{label}**\n{discord.utils.escape_markdown(answer) or '—'}" for label, answer in answers]
+                await channel.send(view=panel(f"## {REQUESTS[key][0]}", *details), file=upload())
             await channel.send(view=controls(i.user.id), file=upload())
         except discord.HTTPException:
             await channel.delete(reason="Ticket controls failed to publish")
@@ -144,10 +184,22 @@ async def on_interaction(i):
     cid = (i.data or {}).get("custom_id", "")
     if i.guild_id != GUILD_ID or not cid.startswith(PREFIX):
         return
+    if cid == PREFIX + "choose" and i.channel_id == SUPPORT:
+        choices = i.data.get("values", [])
+        if choices and choices[0] in REQUESTS:
+            await i.response.send_modal(request_form(choices[0]))
+            # Re-render the shared menu with no default selection.
+            await i.message.edit(view=public_panel(SUPPORT))
+        return
     await i.response.defer(ephemeral=True, thinking=True)
     try:
         action = cid[len(PREFIX):]
-        result = await open_ticket(i) if action == "open" else await manage_ticket(i, action)
+        if action.startswith("form:") and action[5:] in REQUESTS and i.type == discord.InteractionType.modal_submit:
+            result = await open_ticket(i, action[5:])
+        elif action == "open":
+            result = await open_ticket(i)
+        else:
+            result = await manage_ticket(i, action)
         if result:
             await i.followup.send(result, ephemeral=True)
     except discord.HTTPException:
