@@ -14,7 +14,8 @@ from discord import ui
 
 GUILD_ID = 1454719356226240517
 CATEGORY = 1558547311590903831
-STAFF = 1560752530366144543
+STAFF = 1565166580411924610
+FORMER_STAFF = 1560752530366144543
 SUPPORT = 1566118218605662409
 REQUIREMENTS = 1566120622294048819
 BANNER = ROOT / "banner.webp"
@@ -125,19 +126,17 @@ async def manage_ticket(i, action):
             await channel.edit(topic=topic(owner, i.user.id))
             await i.message.edit(view=controls(owner, i.user.id))
             return "You claimed this ticket."
-        if action == "close":
+        if action in ("close", "confirm"):  # Older confirmations promised an archive.
             await i.edit_original_response(view=confirmation(), attachments=[upload()])
             return None
-        if action == "confirm":
-            # One Discord edit commits the closed state and removes member access together.
-            overwrites = {target: perm for target, perm in channel.overwrites.items() if target.id != owner}
-            await channel.edit(name=f"closed-{channel.id}", topic=topic(owner, claimant, "closed"),
-                               overwrites=overwrites, category=None, reason=f"Evoke ticket closed by {i.user.id}")
-            return "Ticket closed. Staff can access the archived conversation."
+        if action == "delete":
+            await i.edit_original_response(content="Deleting this ticket…")
+            await channel.delete(reason=f"Evoke ticket closed by {i.user.id}")
+            return None
 
 
 def confirmation():
-    return panel("## Close ticket?", "Staff will keep a private archive of this conversation.", ui.ActionRow(button("Confirm close", "confirm", discord.ButtonStyle.danger)))
+    return panel("## Close ticket?", "Confirming permanently deletes this channel and its message history.", ui.ActionRow(button("Delete ticket", "delete", discord.ButtonStyle.danger)))
 
 
 @client.event
@@ -157,9 +156,35 @@ async def on_interaction(i):
                               ephemeral=True)
 
 
+async def update_open_ticket_access():
+    guild = client.get_guild(GUILD_ID)
+    staff = guild.get_role(STAFF) if guild else None
+    if staff is None:
+        log.error("Evoke staff role %s is unavailable", STAFF)
+        return
+    former = guild.get_role(FORMER_STAFF)
+    access = discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                         read_message_history=True, attach_files=True)
+    async with ticket_lock:
+        for channel in guild.text_channels:
+            data = ticket_data(channel)
+            if not data or data[2] != "open":
+                continue
+            try:
+                current = channel.overwrites_for(staff)
+                if any(getattr(current, key) is not True for key, value in access if value is True):
+                    current.update(**{key: True for key, value in access if value is True})
+                    await channel.set_permissions(staff, overwrite=current, reason="Update Evoke staff role")
+                if former and former in channel.overwrites:
+                    await channel.set_permissions(former, overwrite=None, reason="Replace former Evoke staff role")
+            except discord.HTTPException:
+                log.exception("Could not update staff access for ticket %s", channel.id)
+
+
 @client.event
 async def on_ready():
     async with publish_lock:
+        await update_open_ticket_access()
         for channel_id in (SUPPORT, REQUIREMENTS):
             try:
                 channel = await client.fetch_channel(channel_id)

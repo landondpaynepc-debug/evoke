@@ -1,6 +1,6 @@
 # Evoke Systems
 
-Evoke Support opens a private ticket under category `1558547311590903831` and pings staff role `1560752530366144543`. Only staff can claim. Staff or the opener can confirm closure. Closure removes the opener’s individual access, moves the channel out of the open category, and preserves its messages and attachments for staff. Staff members retain access through their role. Each member can have one open ticket. Keep one bot instance running.
+Evoke Support opens a private ticket under category `1558547311590903831` and pings staff role `1565166580411924610`. Only staff can claim. Staff or the opener can confirm closure. Confirming closure permanently deletes the ticket channel and its message history. Each member can have one open ticket. Keep one bot instance running.
 
 The bot publishes or refreshes its Components V2 support panel in `1566118218605662409` and its roster requirements in `1566120622294048819` when it connects. Keep the included banner.webp alongside bot.py.
 
