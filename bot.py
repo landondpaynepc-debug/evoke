@@ -252,7 +252,10 @@ async def on_interaction(i):
             result = await manage_ticket(i, action)
         if result:
             await i.followup.send(result, ephemeral=True)
-    except (discord.HTTPException, RuntimeError):
+    except RuntimeError as error:
+        log.exception("Ticket action could not finish in %s", i.channel_id)
+        await i.followup.send(f"The ticket remains open. {error}", ephemeral=True)
+    except discord.HTTPException:
         log.exception("Discord rejected %s in %s", cid, i.channel_id)
         await i.followup.send("Discord could not finish that action. Staff can check the bot permissions and service logs.",
                               ephemeral=True)
@@ -286,29 +289,6 @@ async def update_open_ticket_access():
 @client.event
 async def on_ready():
     async with publish_lock:
-        guild = client.get_guild(GUILD_ID)
-        removed = 0
-        failed = 0
-        async with ticket_lock:
-            for channel in await guild.fetch_channels() if guild else []:
-                if not isinstance(channel, discord.TextChannel) or channel.id in (SUPPORT, REQUIREMENTS, TRANSCRIPTS):
-                    continue
-                if channel.created_at.timestamp() > 1795040995:
-                    continue
-                parts = (channel.topic or "").split("/")
-                if len(parts) != 4 or parts[0] != "evoke-ticket" or not all(x.isdecimal() for x in parts[1:3]):
-                    continue
-                is_open = channel.category_id == CATEGORY and parts[3] == "open"
-                is_archive = parts[3] == "closed" and channel.name == f"closed-{channel.id}"
-                if is_open or is_archive:
-                    try:
-                        await save_transcript(channel, "Evoke ticket reset")
-                        await channel.delete(reason="Owner-requested Evoke ticket reset")
-                        removed += 1
-                    except (discord.HTTPException, RuntimeError):
-                        log.exception("Reset failed for ticket %s", channel.id)
-                        failed += 1
-        log.info("Evoke reset complete: %d deleted, %d failed", removed, failed)
         await update_open_ticket_access()
         for channel_id in (SUPPORT, REQUIREMENTS):
             try:

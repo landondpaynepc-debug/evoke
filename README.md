@@ -1,6 +1,6 @@
 # Evoke Systems
 
-Evoke Support opens a private ticket under category `1558547311590903831` and pings staff role `1565166580411924610`. Only staff can claim. Staff or the opener can confirm closure. Confirming closure permanently deletes the ticket channel and its message history. Each member can have one open ticket. Keep one bot instance running.
+Evoke Support opens a private ticket under category `1558547311590903831` and pings staff role `1565166580411924610`. Only staff can claim. Staff or the opener can confirm closure. Confirming closure posts a UTF-8 text transcript to channel `1558547308054839326` before deleting the ticket channel. Grant the bot Read Message History in tickets and Send Messages and Attach Files in the transcript channel. Enable Message Content Intent in the Developer Portal for access to members’ message text through Discord history. Attachment entries are links. Each member can have one open ticket. Keep one bot instance running.
 
 The bot publishes or refreshes its Components V2 support panel in `1566118218605662409` and its roster requirements in `1566120622294048819` when it connects. Keep the included banner.webp alongside bot.py.
 
