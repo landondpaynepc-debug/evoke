@@ -1,5 +1,7 @@
 """Evoke Systems | Discord support and roster applications."""
 import asyncio
+import hashlib
+from datetime import timedelta
 import io
 import logging
 import os
@@ -706,6 +708,8 @@ async def on_ready():
                 log.warning("Careers role configuration: %s", error)
             else:
                 log.info("Careers acceptance roles are assignable")
+        if guild:
+            await clean_recent_welcomes(guild)
         await update_open_ticket_access()
         for channel_id in (SUPPORT, REQUIREMENTS, CAREERS):
             try:
@@ -746,8 +750,46 @@ async def greet(member, count):
     if not isinstance(channel, discord.TextChannel):
         log.error("Welcome channel %s unavailable", WELCOME)
         return
-    await channel.send(view=welcome_panel(member, count),
+    joined = member.joined_at.isoformat() if member.joined_at else "recent"
+    nonce = hashlib.blake2s(f"welcome/{member.guild.id}/{member.id}/{joined}".encode(), digest_size=12).hexdigest()
+    await channel.send(view=welcome_panel(member, count), nonce=nonce,
                        allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False))
+
+
+async def clean_recent_welcomes(guild):
+    channel = guild.get_channel(WELCOME)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    cutoff = discord.utils.utcnow() - timedelta(hours=1)
+    seen_times = {}
+    members = {}
+    removed = 0
+    try:
+        async for msg in channel.history(limit=None, after=cutoff, oldest_first=True):
+            if msg.author.id != client.user.id:
+                continue
+            lines = [line for cmp in msg.components for line in component_text(cmp)]
+            prefix = f"{WELCOME_EMOJI} Welcome <@"
+            line = next((s for s in lines if s.startswith(prefix)), "")
+            raw_id, sep, tail = line[len(prefix):].partition("> to **Evoke Esports™**!")
+            if not sep or not raw_id.isdecimal():
+                continue
+            uid = int(raw_id)
+            if uid in seen_times and uid not in members:
+                try:
+                    members[uid] = await guild.fetch_member(uid)
+                except discord.NotFound:
+                    members[uid] = None
+            if uid in seen_times:
+                member = members[uid]
+                if member and member.joined_at and seen_times[uid] >= member.joined_at:
+                    await msg.delete()
+                    removed += 1
+                    continue
+            seen_times[uid] = msg.created_at
+        log.info("Removed %d duplicate welcome messages", removed)
+    except discord.HTTPException:
+        log.exception("Could not check recent welcome messages")
 
 
 async def assign_join_role(member):
