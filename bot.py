@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / ".packages"))
 import discord
 from aiohttp import web
 from discord import ui
+from discord.ext import tasks
 
 GUILD_ID = 1454719356226240517
 CATEGORY = 1558547311590903831
@@ -662,7 +663,34 @@ async def update_open_ticket_access():
                 log.exception("Could not update staff access for ticket %s", channel.id)
 
 
+@tasks.loop(seconds=30)
+async def rotate_presence():
+    await client.wait_until_ready()
+    guild = client.get_guild(GUILD_ID)
+    if guild is None or guild.unavailable:
+        return
+    if rotate_presence.current_loop % 2 == 0:
+        count = guild.member_count
+        if count is None or not client.intents.members:
+            try:
+                snapshot = await client.fetch_guild(GUILD_ID, with_counts=True)
+                count = snapshot.approximate_member_count
+            except discord.HTTPException:
+                log.warning("Could not refresh the Evoke member count")
+        if count is None:
+            return
+        activity = discord.Activity(type=discord.ActivityType.watching,
+                                    name=f"over {count:,} {'member' if count == 1 else 'members'}")
+    else:
+        activity = discord.CustomActivity(name="discord.gg/evokeesports")
+    await client.change_presence(activity=activity)
+    if rotate_presence.current_loop < 2:
+        log.info("Presence sent: %s", activity.name)
+
+
 async def on_ready():
+    if not rotate_presence.is_running():
+        rotate_presence.start()
     async with publish_lock:
         guild = client.get_guild(GUILD_ID)
         if guild and guild.me:
@@ -780,6 +808,7 @@ async def main():
         async with client:
             await client.start(token)
     finally:
+        rotate_presence.cancel()
         await runner.cleanup()
 
 
