@@ -1,5 +1,6 @@
 """Evoke Systems | Discord support and roster applications."""
 import asyncio
+import io
 import logging
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from discord import ui
 
 GUILD_ID = 1454719356226240517
 CATEGORY = 1558547311590903831
+TRANSCRIPTS = 1558547308054839326
 STAFF = 1565166580411924610
 FORMER_STAFF = 1560752530366144543
 SUPPORT = 1566118218605662409
@@ -150,6 +152,53 @@ async def open_ticket(i, key=None):
         return f"Your ticket is ready in {channel.mention}."
 
 
+def component_text(component):
+    text = getattr(component, "content", None)
+    if text:
+        yield text
+    for child in getattr(component, "children", []):
+        yield from component_text(child)
+
+
+async def save_transcript(channel, reason):
+    destination = await channel.guild.fetch_channel(TRANSCRIPTS)
+    if not isinstance(destination, discord.TextChannel) or destination.id == channel.id:
+        raise RuntimeError("Transcript destination must be a separate text channel.")
+    if not channel.permissions_for(channel.guild.me).read_message_history:
+        raise RuntimeError("Missing Read Message History in the ticket.")
+    body = io.BytesIO()
+    body.write(f"Evoke Support | #{channel.name} ({channel.id})\n{channel.topic}\n{reason}\n\n".encode())
+    count = 0
+    async for msg in channel.history(limit=None, oldest_first=True):
+        lines = [f"[{msg.created_at.isoformat()}] {msg.author} ({msg.author.id})", msg.content]
+        for component in msg.components:
+            lines.extend(component_text(component))
+        for embed in msg.embeds:
+            lines.extend(filter(None, [embed.title, embed.description]))
+            lines.extend(f"{f.name}: {f.value}" for f in embed.fields)
+        lines.extend(f"Attachment: {a.filename} {a.url}" for a in msg.attachments)
+        lines.extend(f"Sticker: {s.name}" for s in msg.stickers)
+        if not any(lines[1:]):
+            if msg.type in (discord.MessageType.default, discord.MessageType.reply) and not msg.author.bot:
+                raise RuntimeError("Discord withheld message content. Enable Message Content Intent for Evoke Systems in the Developer Portal.")
+            lines.append(f"[{msg.type.name}]")
+        body.write(("\n".join(line for line in lines if line) + "\n\n").encode("utf-8"))
+        count += 1
+    body.seek(0)
+    size = min(channel.guild.filesize_limit, 8 * 1024 * 1024)
+    part = 0
+    while body.tell() < body.getbuffer().nbytes:
+        part += 1
+        chunk = body.read(size)
+        # Keep every part valid UTF-8.
+        if body.tell() < body.getbuffer().nbytes:
+            valid = chunk.decode("utf-8", errors="ignore").encode()
+            body.seek(len(valid) - len(chunk), 1)
+            chunk = valid
+        await destination.send(f"Ticket transcript • #{channel.name} • {count} messages • part {part}",
+                               file=discord.File(io.BytesIO(chunk), filename=f"ticket-{channel.id}-{part}.txt"))
+
+
 async def manage_ticket(i, action):
     async with ticket_lock:
         channel = await i.guild.fetch_channel(i.channel_id)
@@ -170,13 +219,14 @@ async def manage_ticket(i, action):
             await i.edit_original_response(view=confirmation(), attachments=[upload()])
             return None
         if action == "delete":
-            await i.edit_original_response(content="Deleting this ticket…")
+            await i.edit_original_response(content="Saving the transcript before deleting this ticket…")
+            await save_transcript(channel, f"Closed by {i.user.id}")
             await channel.delete(reason=f"Evoke ticket closed by {i.user.id}")
             return None
 
 
 def confirmation():
-    return panel("## Close ticket?", "Confirming permanently deletes this channel and its message history.", ui.ActionRow(button("Delete ticket", "delete", discord.ButtonStyle.danger)))
+    return panel("## Close ticket?", "Confirming saves a transcript for staff and permanently deletes this channel.", ui.ActionRow(button("Delete ticket", "delete", discord.ButtonStyle.danger)))
 
 
 @client.event
@@ -202,7 +252,7 @@ async def on_interaction(i):
             result = await manage_ticket(i, action)
         if result:
             await i.followup.send(result, ephemeral=True)
-    except discord.HTTPException:
+    except (discord.HTTPException, RuntimeError):
         log.exception("Discord rejected %s in %s", cid, i.channel_id)
         await i.followup.send("Discord could not finish that action. Staff can check the bot permissions and service logs.",
                               ephemeral=True)
@@ -236,6 +286,29 @@ async def update_open_ticket_access():
 @client.event
 async def on_ready():
     async with publish_lock:
+        guild = client.get_guild(GUILD_ID)
+        removed = 0
+        failed = 0
+        async with ticket_lock:
+            for channel in await guild.fetch_channels() if guild else []:
+                if not isinstance(channel, discord.TextChannel) or channel.id in (SUPPORT, REQUIREMENTS, TRANSCRIPTS):
+                    continue
+                if channel.created_at.timestamp() > 1795040995:
+                    continue
+                parts = (channel.topic or "").split("/")
+                if len(parts) != 4 or parts[0] != "evoke-ticket" or not all(x.isdecimal() for x in parts[1:3]):
+                    continue
+                is_open = channel.category_id == CATEGORY and parts[3] == "open"
+                is_archive = parts[3] == "closed" and channel.name == f"closed-{channel.id}"
+                if is_open or is_archive:
+                    try:
+                        await save_transcript(channel, "Evoke ticket reset")
+                        await channel.delete(reason="Owner-requested Evoke ticket reset")
+                        removed += 1
+                    except (discord.HTTPException, RuntimeError):
+                        log.exception("Reset failed for ticket %s", channel.id)
+                        failed += 1
+        log.info("Evoke reset complete: %d deleted, %d failed", removed, failed)
         await update_open_ticket_access()
         for channel_id in (SUPPORT, REQUIREMENTS):
             try:
