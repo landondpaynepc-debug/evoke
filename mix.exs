@@ -9,5 +9,8 @@ defmodule Evoke.MixProject do
   defp install_python(_args) do
     {_output, status} = System.cmd("python", ["-m", "pip", "install", "--target", ".packages", "-r", "requirements.txt"], into: IO.stream())
     if status != 0, do: Mix.raise("Python dependency installation failed")
+    # Render's Elixir runtime omits the Python toolchain from the running container.
+    {prefix, 0} = System.cmd("python", ["-c", "import sys; print(sys.base_prefix)"])
+    File.cp_r!(String.trim(prefix), ".python-runtime")
   end
 end
