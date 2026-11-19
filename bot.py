@@ -21,7 +21,7 @@ CATEGORY = 1558547311590903831
 TRANSCRIPTS = 1558547308054839326
 STAFF = 1565166580411924610
 FORMER_STAFF = 1560752530366144543
-WELCOME = 1454719357723869281
+WELCOME = 1573081919648694352
 JOIN_ROLE = 1546383491665756311
 WELCOME_EMOJI = "<a:pfp:1565463462388441138>"
 SUPPORT = 1566118218605662409
@@ -497,7 +497,7 @@ def component_text(component):
         yield from component_text(child)
 
 
-async def save_transcript(channel, reason):
+async def save_transcript(channel, reason, allow_partial=False):
     destination = await channel.guild.fetch_channel(TRANSCRIPTS)
     if not isinstance(destination, discord.TextChannel) or destination.id == channel.id:
         raise RuntimeError("Transcript destination must be a separate text channel.")
@@ -506,6 +506,7 @@ async def save_transcript(channel, reason):
     body = io.BytesIO()
     body.write(f"Evoke Support | #{channel.name} ({channel.id})\n{channel.topic}\n{reason}\n\n".encode())
     count = 0
+    unavailable = 0
     async for msg in channel.history(limit=None, oldest_first=True):
         lines = [f"[{msg.created_at.isoformat()}] {msg.author} ({msg.author.id})", msg.content]
         for component in msg.components:
@@ -517,10 +518,16 @@ async def save_transcript(channel, reason):
         lines.extend(f"Sticker: {s.name}" for s in msg.stickers)
         if not any(lines[1:]):
             if msg.type in (discord.MessageType.default, discord.MessageType.reply) and not msg.author.bot:
-                raise RuntimeError("Discord withheld message content. Enable Message Content Intent for Evoke Systems in the Developer Portal.")
-            lines.append(f"[{msg.type.name}]")
+                unavailable += 1
+                lines.append(f"[Message {msg.id}: content unavailable]")
+            else:
+                lines.append(f"[{msg.type.name}]")
         body.write(("\n".join(line for line in lines if line) + "\n\n").encode("utf-8"))
         count += 1
+    if unavailable and not allow_partial:
+        return unavailable
+    if unavailable:
+        body.write(f"\nPartial transcript: {unavailable} entries have unavailable content.\n".encode())
     body.seek(0)
     size = min(channel.guild.filesize_limit, 8 * 1024 * 1024)
     part = 0
@@ -532,7 +539,7 @@ async def save_transcript(channel, reason):
             valid = chunk.decode("utf-8", errors="ignore").encode()
             body.seek(len(valid) - len(chunk), 1)
             chunk = valid
-        await destination.send(f"Ticket transcript • #{channel.name} • {count} messages • part {part}",
+        await destination.send(f"{'Partial ticket transcript' if unavailable else 'Ticket transcript'} • #{channel.name} • {count} messages • part {part}",
                                file=discord.File(io.BytesIO(chunk), filename=f"ticket-{channel.id}-{part}.txt"))
 
 
@@ -560,9 +567,15 @@ async def manage_ticket(i, action):
         if action in ("close", "confirm"):  # Older confirmations promised an archive.
             await i.edit_original_response(view=confirmation(), attachments=[upload()])
             return None
-        if action == "delete":
+        if action in ("delete", "delete-partial"):
             await i.edit_original_response(content="Saving the transcript before deleting this ticket…")
-            await save_transcript(channel, f"Closed by {i.user.id}")
+            missing = await save_transcript(channel, f"Closed by {i.user.id}", allow_partial=action == "delete-partial")
+            if missing:
+                warning = panel("## Some message content is unavailable",
+                                f"Discord returned {missing} entries without readable content. You can leave the ticket open or save the available messages, authors, and timestamps before deleting it.",
+                                ui.ActionRow(button("Save partial transcript & close", "delete-partial", discord.ButtonStyle.danger)))
+                await i.edit_original_response(content=None, view=warning, attachments=[upload()])
+                return None
             await channel.delete(reason=f"Evoke ticket closed by {i.user.id}")
             return None
 
@@ -835,7 +848,10 @@ async def main():
         await probe.login(token)
         flags = probe.application_flags
         member_events = flags.gateway_guild_members or flags.gateway_guild_members_limited
-    intents = discord.Intents(guilds=True, members=member_events, guild_messages=not member_events)
+        content_access = flags.gateway_message_content or flags.gateway_message_content_limited
+    log.info("Discord message content access: %s", content_access)
+    intents = discord.Intents(guilds=True, members=member_events, guild_messages=not member_events,
+                             message_content=content_access)
     client = discord.Client(intents=intents, allowed_mentions=discord.AllowedMentions.none(),
                             chunk_guilds_at_startup=False)
     for event in (on_interaction, on_ready, on_member_join, on_message):
