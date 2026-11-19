@@ -15,6 +15,7 @@ import discord
 from aiohttp import web
 from discord import ui
 from discord.ext import tasks
+from moderation import handle_command
 
 GUILD_ID = 1454719356226240517
 CATEGORY = 1558547311590903831
@@ -27,6 +28,7 @@ WELCOME_EMOJI = "<a:pfp:1565463462388441138>"
 SUPPORT = 1566118218605662409
 REQUIREMENTS = 1566120622294048819
 BANNER = ROOT / "banner.webp"
+TICKET_BUTTONS = "evoke-ticket:v2:"
 PREFIX = "evoke:v1:"
 log = logging.getLogger("evoke")
 ticket_lock = asyncio.Lock()
@@ -35,7 +37,8 @@ client: discord.Client
 
 
 def button(label, action, style=discord.ButtonStyle.secondary):
-    return ui.Button(label=label, custom_id=PREFIX + action, style=style)
+    prefix = TICKET_BUTTONS if action in ('close', 'delete', 'delete-partial') else PREFIX
+    return ui.Button(label=label, custom_id=prefix + action, style=style)
 
 
 def panel(*items):
@@ -586,6 +589,29 @@ def confirmation():
 
 async def on_interaction(i):
     cid = (i.data or {}).get("custom_id", "")
+    if cid.startswith(TICKET_BUTTONS):
+        if i.guild_id != GUILD_ID:
+            return
+        action = cid[len(TICKET_BUTTONS):]
+        if action == "close":
+            data = ticket_data(i.channel)
+            authorized = data and (i.user.id == data[0] or any(r.id == STAFF for r in i.user.roles))
+            if not authorized:
+                await i.response.send_message("Only the opener or Evoke staff can close this ticket.", ephemeral=True)
+                return
+            await i.response.send_message(view=confirmation(), file=upload(), ephemeral=True)
+            return
+        if action in ("delete", "delete-partial"):
+            await i.response.send_message("Preparing your ticket transcript…", ephemeral=True)
+            try:
+                result = await manage_ticket(i, action)
+                if result:
+                    await i.edit_original_response(content=result)
+            except (RuntimeError, discord.HTTPException):
+                log.exception("Ticket closure failed in %s", i.channel_id)
+                await i.followup.send("Closure could not finish. Check transcript and channel permissions.", ephemeral=True)
+            return
+        return
     if not cid.startswith(PREFIX):
         return
     action = cid[len(PREFIX):]
@@ -668,6 +694,20 @@ async def update_open_ticket_access():
             if not data or data[2] != "open":
                 continue
             try:
+                async for message in channel.history(limit=None, oldest_first=True):
+                    if message.author.id != client.user.id:
+                        continue
+                    ids = dm_buttons(message)
+                    if TICKET_BUTTONS + "close" in ids:
+                        break
+                    if PREFIX + "close" in ids:
+                        view = ui.LayoutView.from_message(message)
+                        for item in view.walk_children():
+                            if getattr(item, "custom_id", None) == PREFIX + "close":
+                                item.custom_id = TICKET_BUTTONS + "close"
+                        await message.edit(view=view, allowed_mentions=discord.AllowedMentions.none())
+                        log.info("Updated close control in ticket %s", channel.id)
+                        break
                 current = channel.overwrites_for(staff)
                 if any(getattr(current, key) is not True for key, value in access if value is True):
                     current.update(**{key: True for key, value in access if value is True})
@@ -826,6 +866,8 @@ async def on_member_join(member):
 
 
 async def on_message(message):
+    if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
+        await handle_command(message)
     if (not client.intents.members and message.guild and message.guild.id == GUILD_ID
             and message.type == discord.MessageType.new_member):
         member = message.author if isinstance(message.author, discord.Member) else await message.guild.fetch_member(message.author.id)
@@ -850,7 +892,7 @@ async def main():
         member_events = flags.gateway_guild_members or flags.gateway_guild_members_limited
         content_access = flags.gateway_message_content or flags.gateway_message_content_limited
     log.info("Discord message content access: %s", content_access)
-    intents = discord.Intents(guilds=True, members=member_events, guild_messages=not member_events,
+    intents = discord.Intents(guilds=True, members=member_events, guild_messages=True,
                              message_content=content_access)
     client = discord.Client(intents=intents, allowed_mentions=discord.AllowedMentions.none(),
                             chunk_guilds_at_startup=False)
