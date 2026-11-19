@@ -61,7 +61,7 @@ async def setup(guild, store, make_panel, upload):
                 message = await existing.edit(view=view, attachments=[upload()])
                 break
         else:
-            message = await channel.send(view=view, file=upload(), nonce=f"partners{CHANNEL}")
+            message = await channel.send(view=view, file=upload(), nonce=f"ep{CHANNEL}")
         return len(directory)
 
 
