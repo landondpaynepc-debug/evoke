@@ -17,6 +17,7 @@ from discord import ui
 from discord.ext import tasks
 from moderation import handle_command
 import activity_stats
+import partners
 import voice_rooms
 
 GUILD_ID = 1454719356226240517
@@ -626,6 +627,9 @@ def confirmation():
 
 async def on_interaction(i):
     cid = (i.data or {}).get("custom_id", "")
+    if i.guild_id == GUILD_ID and cid.startswith("partner:"):
+        await partners.handle(i, STAFF, panel)
+        return
     if i.guild_id == GUILD_ID and cid.startswith("evc:"):
         await voice_rooms.handle(i)
         return
@@ -838,6 +842,12 @@ async def on_ready():
                 await voice_rooms.setup(client, guild, activity_stats.storage, upload)
             except (discord.HTTPException, RuntimeError):
                 log.exception("VC interface setup failed")
+            try:
+                await activity_stats.initialize(guild)
+                count = await partners.setup(guild, activity_stats.storage, panel, upload)
+                log.info("Partner panel ready in %s with %s partners", partners.CHANNEL, count)
+            except (discord.HTTPException, ValueError, RuntimeError):
+                log.exception("Partner directory setup failed")
             await clean_recent_welcomes(guild)
         await update_open_ticket_access()
         for channel_id, title in PANEL_TITLES.items():
@@ -943,7 +953,10 @@ async def on_member_join(member):
 async def on_message(message):
     if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
         await activity_stats.message_event(message)
-        await handle_command(message)
+        if message.content.strip().lower() == ".addpartner":
+            await partners.command(message, STAFF)
+        else:
+            await handle_command(message)
     if (not client.intents.members and message.guild and message.guild.id == GUILD_ID
             and message.type == discord.MessageType.new_member):
         member = message.author if isinstance(message.author, discord.Member) else await message.guild.fetch_member(message.author.id)
