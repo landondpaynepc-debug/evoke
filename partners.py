@@ -1,6 +1,7 @@
 """Evoke partner directory and staff intake form."""
 import asyncio
 import re
+from uuid import uuid4
 
 import discord
 from discord import ui
@@ -29,7 +30,7 @@ def directory_view(make_panel, number):
     number = max(0, min(number, pages - 1))
     options = [discord.SelectOption(label=name, value=code) for name, code in entries[number*25:(number+1)*25]]
     items = [TITLE, "Choose a partner below to get their Discord invite.",
-             ui.ActionRow(ui.Select(custom_id="partner:select", placeholder="Choose a partner server", options=options))]
+             ui.ActionRow(ui.Select(custom_id=f"partner:select:{uuid4().hex}", placeholder="Choose a partner server", options=options))]
     if pages > 1:
         items.append(ui.ActionRow(
             ui.Button(label="Previous", custom_id=f"partner:page:{number-1}", disabled=number==0),
@@ -67,12 +68,12 @@ async def setup(guild, store, make_panel, upload):
 
 async def command(msg, staff_id):
     if not any(role.id == staff_id for role in msg.author.roles):
-        await msg.reply("Only Evoke staff can add partners.", mention_author=False, delete_after=10)
+        await msg.reply("Only Evoke staff can add partners.", mention_author=False, nonce=f"ap{msg.id}", delete_after=10)
         return
     view = ui.LayoutView(timeout=None)
     view.add_item(ui.ActionRow(ui.Button(label="Add partner", custom_id=f"partner:open:{msg.author.id}",
                                         style=discord.ButtonStyle.primary)))
-    await msg.reply(view=view, mention_author=False, delete_after=120)
+    await msg.reply(view=view, mention_author=False, nonce=f"ap{msg.id}", delete_after=120)
 
 
 async def handle(i, staff_id, make_panel):
@@ -92,6 +93,7 @@ async def handle(i, staff_id, make_panel):
         await i.response.send_message("Use the current Evoke Partners panel.", ephemeral=True)
         return
     await i.response.defer(ephemeral=True, thinking=True)
+    reply_view = None
     try:
         async with lock:
             if message is None or storage is None:
@@ -119,7 +121,9 @@ async def handle(i, staff_id, make_panel):
                 entry = next((item for item in directory.values() if item[1] == code), None)
                 if not entry:
                     raise ValueError("That invite has changed. Select the partner again.")
-                result = f"**{discord.utils.escape_markdown(entry[0])}**\nhttps://discord.gg/{code}"
+                result = f"**{discord.utils.escape_markdown(entry[0])}**"
+                reply_view = ui.View(timeout=None)
+                reply_view.add_item(ui.Button(label="Join server", url=f"https://discord.gg/{code}"))
             else:
                 raise ValueError("Unknown partner action.")
             await message.edit(view=directory_view(make_panel, page))
@@ -127,4 +131,4 @@ async def handle(i, staff_id, make_panel):
         result = str(error)
     except discord.HTTPException:
         result = "Discord could not finish updating the partner panel. Please retry."
-    await i.edit_original_response(content=result, allowed_mentions=discord.AllowedMentions.none())
+    await i.edit_original_response(content=result, view=reply_view, allowed_mentions=discord.AllowedMentions.none())
