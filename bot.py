@@ -16,6 +16,8 @@ from aiohttp import web
 from discord import ui
 from discord.ext import tasks
 from moderation import handle_command
+import activity_stats
+import voice_rooms
 
 GUILD_ID = 1454719356226240517
 CATEGORY = 1558547311590903831
@@ -589,6 +591,12 @@ def confirmation():
 
 async def on_interaction(i):
     cid = (i.data or {}).get("custom_id", "")
+    if i.guild_id == GUILD_ID and cid.startswith("evc:"):
+        await voice_rooms.handle(i)
+        return
+    if i.guild_id == GUILD_ID and cid.startswith("evstats:"):
+        await activity_stats.interaction(i)
+        return
     if cid.startswith(TICKET_BUTTONS):
         if i.guild_id != GUILD_ID:
             return
@@ -743,7 +751,35 @@ async def rotate_presence():
         log.info("Presence sent: %s", activity.name)
 
 
+@tasks.loop(seconds=30)
+async def collect_activity():
+    await client.wait_until_ready()
+    guild = client.get_guild(GUILD_ID)
+    if not guild or guild.unavailable:
+        activity_stats.voice_reset()
+        return
+    try:
+        await activity_stats.initialize(guild)
+        activity_stats.sync_voice(guild)
+        activity_stats.prune(discord.utils.utcnow().date())
+        await activity_stats.checkpoint()
+    except (discord.HTTPException, RuntimeError):
+        log.exception("Activity collection could not complete")
+
+
+async def on_voice_state_update(member, before, after):
+    if member.guild.id == GUILD_ID:
+        activity_stats.voice_event(member, before, after)
+        await voice_rooms.voice_event(member, before, after)
+
+
+async def on_disconnect():
+    activity_stats.voice_reset()
+
+
 async def on_ready():
+    if not collect_activity.is_running():
+        collect_activity.start()
     if not rotate_presence.is_running():
         rotate_presence.start()
     async with publish_lock:
@@ -762,6 +798,11 @@ async def on_ready():
             else:
                 log.info("Careers acceptance roles are assignable")
         if guild:
+            try:
+                await activity_stats.initialize(guild)
+                await voice_rooms.setup(client, guild, activity_stats.storage, upload)
+            except (discord.HTTPException, RuntimeError):
+                log.exception("VC interface setup failed")
             await clean_recent_welcomes(guild)
         await update_open_ticket_access()
         for channel_id in (SUPPORT, REQUIREMENTS, CAREERS):
@@ -867,6 +908,7 @@ async def on_member_join(member):
 
 async def on_message(message):
     if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
+        await activity_stats.message_event(message)
         await handle_command(message)
     if (not client.intents.members and message.guild and message.guild.id == GUILD_ID
             and message.type == discord.MessageType.new_member):
@@ -892,11 +934,11 @@ async def main():
         member_events = flags.gateway_guild_members or flags.gateway_guild_members_limited
         content_access = flags.gateway_message_content or flags.gateway_message_content_limited
     log.info("Discord message content access: %s", content_access)
-    intents = discord.Intents(guilds=True, members=member_events, guild_messages=True,
+    intents = discord.Intents(guilds=True, members=member_events, guild_messages=True, voice_states=True,
                              message_content=content_access)
     client = discord.Client(intents=intents, allowed_mentions=discord.AllowedMentions.none(),
                             chunk_guilds_at_startup=False)
-    for event in (on_interaction, on_ready, on_member_join, on_message):
+    for event in (on_interaction, on_ready, on_member_join, on_message, on_voice_state_update, on_disconnect):
         client.event(event)
     app = web.Application()
     app.router.add_get("/", health)
@@ -908,6 +950,7 @@ async def main():
         async with client:
             await client.start(token)
     finally:
+        collect_activity.cancel()
         rotate_presence.cancel()
         await runner.cleanup()
 
