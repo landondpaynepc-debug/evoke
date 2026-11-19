@@ -420,7 +420,42 @@ async def review_dm_action(i, action):
     await i.edit_original_response(content=result)
 
 
+SOCIALS = 1556210205606289418
+GUIDELINES = 1549820804064219227
+PANEL_TITLES = {SUPPORT: "# Evoke Support", REQUIREMENTS: "# Join Evoke", CAREERS: "# Evoke Careers",
+                SOCIALS: "# Evoke Socials", GUIDELINES: "# Evoke Guidelines"}
+
+
 def public_panel(channel):
+    if channel == SOCIALS:
+        return panel(PANEL_TITLES[SOCIALS],
+                     "Find Evoke’s competitive profile, follow the team, or join the Discord.",
+                     ui.ActionRow(ui.Button(label="Fortnite Tracker", url="https://fortnitetracker.com/esports/organization/evoke-esports"),
+                                  ui.Button(label="X", url="https://x.com/EvokeEsport"),
+                                  ui.Button(label="YouTube", url="https://www.youtube.com/@Evokeesportsofficial")),
+                     ui.ActionRow(ui.Button(label="TikTok", url="https://www.tiktok.com/@officalevoke"),
+                                  ui.Button(label="Discord", url="https://discord.gg/evokeesports")))
+    if channel == GUIDELINES:
+        return panel(PANEL_TITLES[GUIDELINES],
+                     "These rules apply in Discord, in competition, and wherever you represent Evoke.",
+                     ui.Separator(),
+                     "### 1 · Respect & conduct\nTreat members, staff, players, and partners with respect. "
+                     "Harassment, bullying, discrimination, and stirring up drama are prohibited. "
+                     "Keep conversations mature and appropriate. English is our primary language.",
+                     "### 2 · Competitive integrity\nPlay fairly in every tournament, scrim, and event. "
+                     "Cheating, exploiting bugs, illegal teaming, account sharing, boosting, and other unfair advantages are prohibited. Follow each event’s rules.",
+                     "### 3 · Content & promotion\nKeep posts, jokes, and memes appropriate. "
+                     "Keep NSFW, illegal, and excessively graphic content out of the server. Avoid spam, mass tagging, and unsolicited ads. "
+                     "Get staff permission before promoting another organization or server.",
+                     "### 4 · Voice & text channels\nUse each channel for its intended purpose. "
+                     "Keep voice chat clear of yelling, disruptive soundboards, and deliberate interruptions.",
+                     ui.Separator(),
+                     "### 5 · Privacy & security\nKeep personal information private, including your own. "
+                     "Doxxing, threats, scams, and attempts to compromise another member’s account are prohibited. Report suspicious activity to staff immediately.",
+                     "### 6 · Moderation\nFollow directions from staff and team leaders, and respect warnings and moderation decisions. "
+                     "Violations can lead to a warning, loss of roles, or removal from the server. Serious or repeated violations may result in a permanent ban.",
+                     "### 7 · Represent Evoke\nSupport your teammates, help others improve, and show good sportsmanship wherever you play. Have fun competing together.",
+                     ui.Separator(), f"**Need to report a concern?** Open a private ticket in <#{SUPPORT}> and choose **Reporting**. You can report concerns about members or staff.")
     if channel == CAREERS:
         return panel("# Evoke Careers", "## Join the Trial Staff team\nHelp members get answers in tickets and keep the Discord welcoming.",
                      "**What we look for**\n• Active in the Discord\n• Professional and respectful\n• Willing to answer tickets and help members\n• Responsible and trustworthy",
@@ -805,14 +840,13 @@ async def on_ready():
                 log.exception("VC interface setup failed")
             await clean_recent_welcomes(guild)
         await update_open_ticket_access()
-        for channel_id in (SUPPORT, REQUIREMENTS, CAREERS):
+        for channel_id, title in PANEL_TITLES.items():
             try:
                 channel = await client.fetch_channel(channel_id)
                 if not isinstance(channel, discord.TextChannel) or channel.guild.id != GUILD_ID:
                     log.error("Panel channel %s must be a text channel in guild %s", channel_id, GUILD_ID)
                     continue
                 view = public_panel(channel_id)
-                title = {SUPPORT: "# Evoke Support", REQUIREMENTS: "# Join Evoke", CAREERS: "# Evoke Careers"}[channel_id]
                 async for message in channel.history(limit=None):
                     if message.author.id != client.user.id:
                         continue
