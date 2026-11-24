@@ -90,7 +90,7 @@ def form_answers(i, key):
 
 CAREERS = 1566128366040645642
 REVIEWERS = 1572743601358635098
-ACCEPTANCE_ROLES = (1571298522685247598, STAFF)
+ACCEPTANCE_ROLES = (1574906941745008800, STAFF)
 REVIEW_LOG = 1572744498729984030
 QUESTIONS = [
     "What staff experience do you have?",
@@ -857,6 +857,24 @@ async def on_ready():
                     log.error("Panel channel %s must be a text channel in guild %s", channel_id, GUILD_ID)
                     continue
                 view = public_panel(channel_id)
+                if channel_id == SUPPORT:
+                    existing = [m async for m in channel.history(limit=None)
+                                if m.author.id == client.user.id and any(
+                                    getattr(child, "content", "") == title for component in m.components
+                                    for child in getattr(component, "children", ()))]
+                    # Repost once for the November 24 request, then reuse the replacement.
+                    if existing and existing[0].created_at.timestamp() >= 1795559020:
+                        current = existing.pop(0)
+                        await current.edit(view=view, attachments=[upload()])
+                    else:
+                        current = await channel.send(view=view, file=upload())
+                    for previous in existing:
+                        try:
+                            await previous.delete()
+                        except discord.NotFound:
+                            pass
+                    log.info("Support panel ready: %s", current.jump_url)
+                    continue
                 async for message in channel.history(limit=None):
                     if message.author.id != client.user.id:
                         continue
