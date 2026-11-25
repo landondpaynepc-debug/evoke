@@ -26,7 +26,6 @@ STAFF = 1575010444933070908
 FORMER_STAFF = 1560752530366144543
 WELCOME = 1575010445922795663
 RULES_CHANNEL = 1575010445922795664
-DASHBOARD_CHANNEL = 1575010445922795666
 PARTNER_CHANNEL = 1575010446262411274
 JOIN_ROLE = 1575010444916170877
 WELCOME_EMOJI = "<:pfp:1575023459258601555>"
@@ -918,14 +917,13 @@ async def on_ready():
                 if (record.author.id == client.user.id and len(fields) == 3 and fields[0] == "EVOKE-PANEL"
                         and fields[1] in ("partners", "voice") and fields[2].isdecimal()):
                     panel_locations[fields[1]] = int(fields[2])
-            for channel_id, kind in ((RULES_CHANNEL, GUIDELINES), (DASHBOARD_CHANNEL, SUPPORT)):
-                channel = guild.get_channel(channel_id)
-                if channel:
-                    try:
-                        message = await publish_public_panel(channel, kind)
-                        log.info("Public panel %s ready %s", kind, message.jump_url)
-                    except discord.HTTPException:
-                        log.exception("Could not publish %s in %s", kind, channel_id)
+            rules_channel = guild.get_channel(RULES_CHANNEL)
+            if rules_channel:
+                try:
+                    rules_message = await publish_public_panel(rules_channel, GUIDELINES)
+                    log.info("Rules panel ready %s", rules_message.jump_url)
+                except discord.HTTPException:
+                    log.exception("Rules panel setup failed")
             panel_locations["partners"] = PARTNER_CHANNEL
             for kind, channel_id in panel_locations.items():
                 channel = guild.get_channel(channel_id)
