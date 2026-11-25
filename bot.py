@@ -22,8 +22,8 @@ import voice_rooms
 
 GUILD_ID = 1575010444890996857
 TICKET_CATEGORY = 1575019125225431040
-STAFF = 1575010444933070908
-FORMER_STAFF = 1560752530366144543
+STAFF = 1575213997555327067
+FORMER_STAFF = 1575010444933070908
 WELCOME = 1575010445922795663
 RULES_CHANNEL = 1575010445922795664
 PARTNER_CHANNEL = 1575010446262411274
@@ -808,9 +808,18 @@ async def update_open_ticket_access():
     async with ticket_lock:
         for channel in guild.text_channels:
             data = ticket_data(channel)
-            if not data or data[2] != "open":
+            archive = channel.topic == f"evoke-transcripts/{guild.id}"
+            if not archive and (not data or data[2] != "open"):
                 continue
             try:
+                if archive:
+                    current = channel.overwrites_for(staff)
+                    if current.view_channel is not True or current.read_message_history is not True:
+                        current.update(view_channel=True, read_message_history=True)
+                        await channel.set_permissions(staff, overwrite=current, reason="Update transcript staff role")
+                    if former and former in channel.overwrites:
+                        await channel.set_permissions(former, overwrite=None, reason="Replace former transcript staff role")
+                    continue
                 async for message in channel.history(limit=None, oldest_first=True):
                     if message.author.id != client.user.id:
                         continue
@@ -911,6 +920,7 @@ async def on_ready():
             else:
                 log.info("Careers acceptance roles are assignable")
         if guild:
+            await update_open_ticket_access()
             await activity_stats.initialize(guild)
             async for record in activity_stats.storage.history(limit=None, oldest_first=True):
                 fields = record.content.split()
