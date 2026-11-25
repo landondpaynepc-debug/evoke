@@ -566,7 +566,12 @@ async def open_ticket(i, key=None):
     if i.guild_id != GUILD_ID or role is None:
         return "Staff should check the support channel, ticket category, and role IDs."
     async with ticket_lock:
-        channels = await i.guild.fetch_channels()
+        try:
+            channels = await i.guild.fetch_channels()
+        except discord.InvalidData:
+            # A newer Discord channel type can prevent the REST list from decoding.
+            # The gateway cache still contains the guild's supported text channels.
+            channels = i.guild.text_channels
         for channel in channels:
             data = ticket_data(channel)
             if data and data[0] == i.user.id and data[2] == "open":
