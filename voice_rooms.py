@@ -77,11 +77,11 @@ async def setup(client, guild, store, banner):
     global bot, registry, category, lobby, loaded, panel_msg
     async with lock:
         bot, registry = client, store
-        dest = await guild.fetch_channel(DEST)
+        dest = await guild.fetch_channel(DEST) if DEST else None
         target = await guild.fetch_channel(PANEL)
         if not isinstance(target, discord.TextChannel):
             raise RuntimeError("VC panel destination must be a text channel")
-        if isinstance(dest, discord.CategoryChannel):
+        if dest is None or isinstance(dest, discord.CategoryChannel):
             category = dest
             lobby = next((ch for ch in guild.voice_channels if ch.category_id == DEST and
                           ch.name in ("➕ Create VC", "Create VC")), None)

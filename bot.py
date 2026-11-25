@@ -20,19 +20,19 @@ import activity_stats
 import partners
 import voice_rooms
 
-GUILD_ID = 1454719356226240517
-CATEGORY = 1558547311590903831
-TRANSCRIPTS = 1558547308054839326
-STAFF = 1565166580411924610
+GUILD_ID = 1575010444890996857
+STAFF = 1575010444933070908
 FORMER_STAFF = 1560752530366144543
-WELCOME = 1573081919648694352
-JOIN_ROLE = 1546383491665756311
+WELCOME = 1575010445922795663
+RULES_CHANNEL = 1575010445922795664
+PARTNER_CHANNEL = 1575010446262411274
+JOIN_ROLE = 1575010444916170877
 WELCOME_EMOJI = "<a:pfp:1565463462388441138>"
-SUPPORT = 1566118218605662409
-REQUIREMENTS = 1566120622294048819
+SUPPORT = "support"
+REQUIREMENTS = "requirements"
 BANNER = ROOT / "banner.webp"
 TICKET_BUTTONS = "evoke-ticket:v2:"
-PREFIX = "evoke:v1:"
+PREFIX = f"evoke:{GUILD_ID}:"
 log = logging.getLogger("evoke")
 ticket_lock = asyncio.Lock()
 publish_lock = asyncio.Lock()
@@ -88,10 +88,10 @@ def form_answers(i, key):
     return [(label, values.get(f"answer-{n}", "")) for n, label in enumerate(fields)]
 
 
-CAREERS = 1566128366040645642
-REVIEWERS = 1574906941745008800
-ACCEPTANCE_ROLES = (1571298522685247598, STAFF)
-REVIEW_LOG = 1572744498729984030
+CAREERS = "careers"
+REVIEWERS = 1575017606551838780
+ACCEPTANCE_ROLES = (STAFF,)
+REVIEW_LOG = 1575017802266443857
 QUESTIONS = [
     "What staff experience do you have?",
     "Why do you want to join Evoke staff?",
@@ -138,7 +138,7 @@ def application_panel(owner, answers, status, reviewer=0):
 
 
 async def career_start(i):
-    if i.channel_id not in (CAREERS, SUPPORT):
+    if i.guild_id != GUILD_ID:
         return "Open the Careers panel to apply."
     answers = career_answers(i, range(4))
     guild = i.guild
@@ -153,7 +153,7 @@ async def career_start(i):
                 return f"Continue your application in {ch.mention}."
     allow = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True,
                                        attach_files=True)
-    ch = await guild.create_text_channel(f"application-{i.user.id}", category=guild.get_channel(CATEGORY),
+    ch = await guild.create_text_channel(f"application-{i.user.id}", category=i.channel.category,
         topic=prefix + "draft", overwrites={guild.default_role: discord.PermissionOverwrite(view_channel=False),
                                             guild.me: allow, i.user: allow, role: allow})
     try:
@@ -250,7 +250,7 @@ async def career_action(i, action):
     await ch.edit(topic=prefix + f"{action}/{message_id}/{logged.id}")
     notice = f"Your Trial Staff application to **Evoke Esports** was **{action.lower()}**."
     if action == "Accepted":
-        notice += " Your two staff roles have been assigned."
+        notice += " Your staff role has been assigned."
     try:
         user = await client.fetch_user(owner)
         await user.send(view=panel("# Evoke Careers", notice, f"Application channel: {ch.mention}"), file=upload())
@@ -282,7 +282,7 @@ async def send_dm_application(i):
     async with dm_review_lock:
         async for msg in dm.history(limit=None):
             ids = dm_buttons(msg) if msg.author.id == client.user.id else []
-            if any(x in (PREFIX + "applydm:first", PREFIX + "applydm:second") for x in ids) or (ids and any(
+            if any(x in (PREFIX + "applydm:first", PREFIX + "applydm:second") for x in ids) or (any(x.startswith(PREFIX + "applydm:") for x in ids) and any(
                 t == "# Trial Staff application submitted" for cmp in msg.components for t in component_text(cmp)
             )):
                 return f"Your application is already in your DMs. [Open application]({msg.jump_url})"
@@ -407,7 +407,7 @@ async def review_dm_action(i, action):
             await message.edit(view=review_view(owner, draft, answers, outcome, reviewer))
             notice = f"Your Trial Staff application to **Evoke Esports** was **{outcome.lower()}**."
             if outcome == "Accepted":
-                notice += " Your two staff roles have been assigned."
+                notice += " Your staff role has been assigned."
             try:
                 user = await client.fetch_user(owner)
                 dm = await user.create_dm()
@@ -421,18 +421,18 @@ async def review_dm_action(i, action):
     await i.edit_original_response(content=result)
 
 
-SOCIALS = 1556210205606289418
-GUIDELINES = 1549820804064219227
+SOCIALS = "socials"
+GUIDELINES = "guidelines"
 PANEL_TITLES = {SUPPORT: "# Evoke Support", REQUIREMENTS: "# Join Evoke", CAREERS: "# Evoke Careers",
                 SOCIALS: "# Evoke Socials", GUIDELINES: "# Evoke Guidelines"}
 
 
-PANEL_SERVER = 1575010444890996857
+panel_locations = {}
 PANEL_COMMANDS = {
     ".ticketpanel": SUPPORT, ".applicationpanel": CAREERS, ".careerpanel": CAREERS,
     ".requirementspanel": REQUIREMENTS, ".socialspanel": SOCIALS,
     ".rulespanel": GUIDELINES, ".guidelinespanel": GUIDELINES,
-    ".partnerpanel": partners.CHANNEL, ".vcpanel": voice_rooms.PANEL,
+    ".partnerpanel": "partners", ".vcpanel": "voice",
 }
 
 
@@ -445,33 +445,45 @@ async def post_panel_command(message):
     if not (message.author.guild_permissions.manage_guild or any(r.id == STAFF for r in message.author.roles)):
         await message.reply("Only Evoke staff or members with Manage Server can post panels.", mention_author=False)
         return True
-    if guild.id == PANEL_SERVER and destination not in (REQUIREMENTS, GUIDELINES, SOCIALS):
-        await message.reply("This panel needs the new server’s role and channel settings before it can open.", mention_author=False)
-        return True
-    if guild.id == GUILD_ID and destination not in (REQUIREMENTS, GUIDELINES, SOCIALS) and message.channel.id != destination:
-        await message.reply(f"Run this command in <#{destination}>.", mention_author=False)
+    target_id = {GUIDELINES: RULES_CHANNEL, "partners": PARTNER_CHANNEL}.get(destination)
+    channel = guild.get_channel(target_id) if target_id else message.channel
+    if not isinstance(channel, discord.TextChannel):
+        await message.reply("Run this command in a server text channel.", mention_author=False)
         return True
     async with publish_lock:
-        if destination in (partners.CHANNEL, voice_rooms.PANEL):
+        if destination in ("partners", "voice"):
             await activity_stats.initialize(guild)
-            if destination == partners.CHANNEL:
-                await partners.setup(guild, activity_stats.storage, panel, upload)
-            else:
-                await voice_rooms.setup(client, guild, activity_stats.storage, upload)
+            await setup_directory_panel(destination, channel)
+            if panel_locations.get(destination) != channel.id:
+                await activity_stats.storage.send(f"EVOKE-PANEL {destination} {channel.id}")
+                panel_locations[destination] = channel.id
         else:
-            view = public_panel(destination, new_server=guild.id == PANEL_SERVER)
-            async for existing in message.channel.history(limit=None):
-                if existing.author.id == client.user.id and any(PANEL_TITLES[destination] in component_text(c)
-                                                               for c in existing.components):
-                    await existing.edit(view=view, attachments=[upload()])
-                    break
-            else:
-                await message.channel.send(view=view, file=upload())
+            await publish_public_panel(channel, destination)
     return True
 
 
-def public_panel(channel, new_server=False):
-    support_location = "the Evoke Support panel" if new_server else f"<#{SUPPORT}>"
+async def publish_public_panel(channel, destination):
+    view = public_panel(destination)
+    async for existing in channel.history(limit=None):
+        if existing.author.id == client.user.id and any(PANEL_TITLES[destination] in component_text(c)
+                                                       for c in existing.components):
+            await existing.edit(view=view, attachments=[upload()])
+            return existing
+    return await channel.send(view=view, file=upload())
+
+
+async def setup_directory_panel(kind, channel):
+    if kind == "partners":
+        partners.CHANNEL = channel.id
+        await partners.setup(channel.guild, activity_stats.storage, panel, upload)
+    else:
+        voice_rooms.PANEL = channel.id
+        voice_rooms.DEST = channel.category_id
+        await voice_rooms.setup(client, channel.guild, activity_stats.storage, upload)
+
+
+def public_panel(channel):
+    support_location = "the Evoke Support panel"
     if channel == SOCIALS:
         return panel(PANEL_TITLES[SOCIALS],
                      "Find Evoke’s competitive profile, follow the team, or join the Discord.",
@@ -534,7 +546,7 @@ def topic(owner, claimant=0, status="open"):
 
 
 def ticket_data(channel):
-    if not isinstance(channel, discord.TextChannel) or channel.category_id != CATEGORY:
+    if not isinstance(channel, discord.TextChannel) or channel.guild.id != GUILD_ID:
         return None
     parts = (channel.topic or "").split("/")
     if len(parts) == 4 and parts[0] == "evoke-ticket" and all(x.isdecimal() for x in parts[1:3]):
@@ -546,9 +558,9 @@ def upload():
 
 
 async def open_ticket(i, key=None):
-    category = i.guild.get_channel(CATEGORY)
+    category = i.channel.category
     role = i.guild.get_role(STAFF)
-    if i.channel_id != SUPPORT or not isinstance(category, discord.CategoryChannel) or role is None:
+    if i.guild_id != GUILD_ID or role is None:
         return "Staff should check the support channel, ticket category, and role IDs."
     async with ticket_lock:
         channels = await i.guild.fetch_channels()
@@ -583,7 +595,18 @@ def component_text(component):
 
 
 async def save_transcript(channel, reason, allow_partial=False):
-    destination = await channel.guild.fetch_channel(TRANSCRIPTS)
+    guild = channel.guild
+    staff = guild.get_role(STAFF)
+    if staff is None:
+        raise RuntimeError("Ticket staff role is unavailable.")
+    destination = next((c for c in guild.text_channels if c.topic == f"evoke-transcripts/{guild.id}"), None)
+    if destination is None:
+        destination = await guild.create_text_channel("ticket-transcripts", topic=f"evoke-transcripts/{guild.id}",
+            overwrites={guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                        staff: discord.PermissionOverwrite(view_channel=True, read_message_history=True),
+                        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)})
+    if destination.permissions_for(guild.default_role).view_channel:
+        raise RuntimeError("The transcript archive must be private.")
     if not isinstance(destination, discord.TextChannel) or destination.id == channel.id:
         raise RuntimeError("Transcript destination must be a separate text channel.")
     if not channel.permissions_for(channel.guild.me).read_message_history:
@@ -706,8 +729,8 @@ async def on_interaction(i):
     if not cid.startswith(PREFIX):
         return
     action = cid[len(PREFIX):]
-    staff_menu = (action == "choose" and i.channel_id == SUPPORT and i.data.get("values") == ["staff"])
-    start_dm = i.guild_id == GUILD_ID and ((action == "career:apply" and i.channel_id == CAREERS) or staff_menu)
+    staff_menu = (action == "choose" and i.data.get("values") == ["staff"])
+    start_dm = i.guild_id == GUILD_ID and (action == "career:apply" or staff_menu)
     in_dm = i.guild_id is None and action.startswith("applydm:")
     in_review = i.guild_id == GUILD_ID and action.startswith("reviewdm:")
     if start_dm or in_dm or in_review:
@@ -738,7 +761,7 @@ async def on_interaction(i):
             return
         await i.response.send_modal(career_form(second=True))
         return
-    if cid == PREFIX + "choose" and i.channel_id == SUPPORT:
+    if cid == PREFIX + "choose":
         choices = i.data.get("values", [])
         if choices and choices[0] in REQUESTS:
             await i.response.send_modal(request_form(choices[0]))
@@ -881,56 +904,32 @@ async def on_ready():
             else:
                 log.info("Careers acceptance roles are assignable")
         if guild:
-            try:
-                await activity_stats.initialize(guild)
-                await voice_rooms.setup(client, guild, activity_stats.storage, upload)
-            except (discord.HTTPException, RuntimeError):
-                log.exception("VC interface setup failed")
-            try:
-                await activity_stats.initialize(guild)
-                count = await partners.setup(guild, activity_stats.storage, panel, upload)
-                log.info("Partner panel ready in %s with %s partners", partners.CHANNEL, count)
-            except (discord.HTTPException, ValueError, RuntimeError):
-                log.exception("Partner directory setup failed")
-            await clean_recent_welcomes(guild)
-        await update_open_ticket_access()
-        for channel_id, title in PANEL_TITLES.items():
-            try:
-                channel = await client.fetch_channel(channel_id)
-                if not isinstance(channel, discord.TextChannel) or channel.guild.id != GUILD_ID:
-                    log.error("Panel channel %s must be a text channel in guild %s", channel_id, GUILD_ID)
-                    continue
-                view = public_panel(channel_id)
-                if channel_id == SUPPORT:
-                    existing = [m async for m in channel.history(limit=None)
-                                if m.author.id == client.user.id and any(
-                                    getattr(child, "content", "") == title for component in m.components
-                                    for child in getattr(component, "children", ()))]
-                    # Repost once for the November 24 request, then reuse the replacement.
-                    if existing and existing[0].created_at.timestamp() >= 1795559020:
-                        current = existing.pop(0)
-                        await current.edit(view=view, attachments=[upload()])
-                    else:
-                        current = await channel.send(view=view, file=upload())
-                    for previous in existing:
-                        try:
-                            await previous.delete()
-                        except discord.NotFound:
-                            pass
-                    log.info("Support panel ready: %s", current.jump_url)
-                    continue
-                async for message in channel.history(limit=None):
-                    if message.author.id != client.user.id:
-                        continue
-                    if any(getattr(child, "content", "") == title for component in message.components
-                           for child in getattr(component, "children", ())):
-                        await message.edit(view=view, attachments=[upload()])
-                        break
-                else:
-                    await channel.send(view=view, file=upload())
-                log.info("Panel ready in %s", channel_id)
-            except discord.HTTPException:
-                log.exception("Could not publish to %s", channel_id)
+            await activity_stats.initialize(guild)
+            async for record in activity_stats.storage.history(limit=None, oldest_first=True):
+                fields = record.content.split()
+                if (record.author.id == client.user.id and len(fields) == 3 and fields[0] == "EVOKE-PANEL"
+                        and fields[1] in ("partners", "voice") and fields[2].isdecimal()):
+                    panel_locations[fields[1]] = int(fields[2])
+            rules_channel = guild.get_channel(RULES_CHANNEL)
+            if rules_channel:
+                try:
+                    rules_message = await publish_public_panel(rules_channel, GUIDELINES)
+                    log.info("Rules panel ready %s", rules_message.jump_url)
+                except discord.HTTPException:
+                    log.exception("Rules panel setup failed")
+            panel_locations["partners"] = PARTNER_CHANNEL
+            for kind, channel_id in panel_locations.items():
+                channel = guild.get_channel(channel_id)
+                if channel:
+                    try:
+                        await setup_directory_panel(kind, channel)
+                        log.info("%s panel ready in %s", kind, channel.id)
+                    except (discord.HTTPException, RuntimeError, ValueError):
+                        log.exception("Could not restore %s panel", kind)
+            log.info("Evoke panel commands ready in %s; reviewer=%s review_channel=%s", guild.id,
+                     bool(guild.get_role(REVIEWERS)), bool(guild.get_channel(REVIEW_LOG)))
+        else:
+            log.warning("Evoke Systems %s is not connected to guild %s", client.user.id, GUILD_ID)
     log.info("Connected as %s", client.user)
 
 
@@ -939,9 +938,9 @@ def welcome_panel(member, count):
     count_label = f"Members: {count:,}" if count is not None else "Members"
     view.add_item(ui.Container(
         ui.TextDisplay(f"{WELCOME_EMOJI} Welcome {member.mention} to **Evoke Esports™**! "
-                       "Check out the dashboard to get support or apply for a roster."),
+                       "Read the server rules to get started."),
         ui.ActionRow(ui.Button(label=count_label, disabled=True, custom_id="evoke:member-count"),
-                     ui.Button(label="Dashboard", emoji="📋", url=f"https://discord.com/channels/{GUILD_ID}/{SUPPORT}"))))
+                     ui.Button(label="Server Rules", emoji="📋", url=f"https://discord.com/channels/{member.guild.id}/{RULES_CHANNEL}"))))
     return view
 
 
@@ -1008,13 +1007,19 @@ async def assign_join_role(member):
 
 async def on_member_join(member):
     if member.guild.id == GUILD_ID:
-        await assign_join_role(member)
+        if member.guild.get_role(JOIN_ROLE):
+            await assign_join_role(member)
         await greet(member, member.guild.member_count)
 
 
 async def on_message(message):
-    if message.guild and message.guild.id in (GUILD_ID, PANEL_SERVER) and not message.author.bot:
-        if await post_panel_command(message):
+    if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
+        try:
+            if await post_panel_command(message):
+                return
+        except (discord.HTTPException, RuntimeError, ValueError):
+            log.exception("Panel setup failed in %s", message.channel.id)
+            await message.reply("Panel setup failed. Check my channel permissions and try again.", mention_author=False)
             return
     if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
         await activity_stats.message_event(message)
@@ -1022,11 +1027,12 @@ async def on_message(message):
             await partners.command(message, STAFF)
         else:
             await handle_command(message)
-    if (not client.intents.members and message.guild and message.guild.id == GUILD_ID
+    if (not client.intents.members and message.guild and message.guild.get_channel(WELCOME)
             and message.type == discord.MessageType.new_member):
         member = message.author if isinstance(message.author, discord.Member) else await message.guild.fetch_member(message.author.id)
-        await assign_join_role(member)
-        snapshot = await client.fetch_guild(GUILD_ID, with_counts=True)
+        if message.guild.get_role(JOIN_ROLE):
+            await assign_join_role(member)
+        snapshot = await client.fetch_guild(message.guild.id, with_counts=True)
         await greet(member, snapshot.approximate_member_count)
 
 
