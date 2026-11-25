@@ -21,6 +21,7 @@ import partners
 import voice_rooms
 
 GUILD_ID = 1575010444890996857
+TICKET_CATEGORY = 1575019125225431040
 STAFF = 1575010444933070908
 FORMER_STAFF = 1560752530366144543
 WELCOME = 1575010445922795663
@@ -558,7 +559,9 @@ def upload():
 
 
 async def open_ticket(i, key=None):
-    category = i.channel.category
+    category = i.guild.get_channel(TICKET_CATEGORY)
+    if not isinstance(category, discord.CategoryChannel):
+        return "The configured ticket category is unavailable. Please let Evoke staff know."
     role = i.guild.get_role(STAFF)
     if i.guild_id != GUILD_ID or role is None:
         return "Staff should check the support channel, ticket category, and role IDs."
@@ -891,6 +894,10 @@ async def on_ready():
     async with publish_lock:
         guild = client.get_guild(GUILD_ID)
         if guild and guild.me:
+            category = guild.get_channel(TICKET_CATEGORY)
+            log.info("Ticket category %s available=%s manage_channels=%s", TICKET_CATEGORY,
+                     isinstance(category, discord.CategoryChannel),
+                     bool(category and category.permissions_for(guild.me).manage_channels))
             join_role = guild.get_role(JOIN_ROLE)
             log.info("Join role %s assignable=%s", JOIN_ROLE,
                      bool(join_role and guild.me.guild_permissions.manage_roles and join_role.is_assignable()))
