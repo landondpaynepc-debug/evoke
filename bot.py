@@ -427,7 +427,51 @@ PANEL_TITLES = {SUPPORT: "# Evoke Support", REQUIREMENTS: "# Join Evoke", CAREER
                 SOCIALS: "# Evoke Socials", GUIDELINES: "# Evoke Guidelines"}
 
 
-def public_panel(channel):
+PANEL_SERVER = 1575010444890996857
+PANEL_COMMANDS = {
+    ".ticketpanel": SUPPORT, ".applicationpanel": CAREERS, ".careerpanel": CAREERS,
+    ".requirementspanel": REQUIREMENTS, ".socialspanel": SOCIALS,
+    ".rulespanel": GUIDELINES, ".guidelinespanel": GUIDELINES,
+    ".partnerpanel": partners.CHANNEL, ".vcpanel": voice_rooms.PANEL,
+}
+
+
+async def post_panel_command(message):
+    command = message.content.strip().lower()
+    destination = PANEL_COMMANDS.get(command)
+    if destination is None:
+        return False
+    guild = message.guild
+    if not (message.author.guild_permissions.manage_guild or any(r.id == STAFF for r in message.author.roles)):
+        await message.reply("Only Evoke staff or members with Manage Server can post panels.", mention_author=False)
+        return True
+    if guild.id == PANEL_SERVER and destination not in (REQUIREMENTS, GUIDELINES, SOCIALS):
+        await message.reply("This panel needs the new server’s role and channel settings before it can open.", mention_author=False)
+        return True
+    if guild.id == GUILD_ID and destination not in (REQUIREMENTS, GUIDELINES, SOCIALS) and message.channel.id != destination:
+        await message.reply(f"Run this command in <#{destination}>.", mention_author=False)
+        return True
+    async with publish_lock:
+        if destination in (partners.CHANNEL, voice_rooms.PANEL):
+            await activity_stats.initialize(guild)
+            if destination == partners.CHANNEL:
+                await partners.setup(guild, activity_stats.storage, panel, upload)
+            else:
+                await voice_rooms.setup(client, guild, activity_stats.storage, upload)
+        else:
+            view = public_panel(destination, new_server=guild.id == PANEL_SERVER)
+            async for existing in message.channel.history(limit=None):
+                if existing.author.id == client.user.id and any(PANEL_TITLES[destination] in component_text(c)
+                                                               for c in existing.components):
+                    await existing.edit(view=view, attachments=[upload()])
+                    break
+            else:
+                await message.channel.send(view=view, file=upload())
+    return True
+
+
+def public_panel(channel, new_server=False):
+    support_location = "the Evoke Support panel" if new_server else f"<#{SUPPORT}>"
     if channel == SOCIALS:
         return panel(PANEL_TITLES[SOCIALS],
                      "Find Evoke’s competitive profile, follow the team, or join the Discord.",
@@ -456,7 +500,7 @@ def public_panel(channel):
                      "### 6 · Moderation\nFollow directions from staff and team leaders, and respect warnings and moderation decisions. "
                      "Violations can lead to a warning, loss of roles, or removal from the server. Serious or repeated violations may result in a permanent ban.",
                      "### 7 · Represent Evoke\nSupport your teammates, help others improve, and show good sportsmanship wherever you play. Have fun competing together.",
-                     ui.Separator(), f"**Need to report a concern?** Open a private ticket in <#{SUPPORT}> and choose **Reporting**. You can report concerns about members or staff.")
+                     ui.Separator(), f"**Need to report a concern?** Open a private ticket in {support_location} and choose **Reporting**. You can report concerns about members or staff.")
     if channel == CAREERS:
         return panel("# Evoke Careers", "## Join the Trial Staff team\nHelp members get answers in tickets and keep the Discord welcoming.",
                      "**What we look for**\n• Active in the Discord\n• Professional and respectful\n• Willing to answer tickets and help members\n• Responsible and trustworthy",
@@ -472,7 +516,7 @@ def public_panel(channel):
                  "**Grinders**  ·  500–2,999+ PR\n**Future**  ·  0–500 PR",
                  ui.Separator(), "## Content roster\n**Main Content**  ·  10,000 followers or subscribers\n"
                  "Include **evk** on your social profiles.",
-                 ui.Separator(), f"## How to apply\nGo to <#{SUPPORT}> and choose **Player Applications** or **Creator Applications**. "
+                 ui.Separator(), f"## How to apply\nGo to {support_location} and choose **Player Applications** or **Creator Applications**. "
                  "Submit the form to open your private application ticket.")
 
 
@@ -969,6 +1013,9 @@ async def on_member_join(member):
 
 
 async def on_message(message):
+    if message.guild and message.guild.id in (GUILD_ID, PANEL_SERVER) and not message.author.bot:
+        if await post_panel_command(message):
+            return
     if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
         await activity_stats.message_event(message)
         if message.content.strip().lower() == ".addpartner":
