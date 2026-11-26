@@ -423,6 +423,7 @@ async def review_dm_action(i, action):
 
 
 SOCIALS = "socials"
+SOCIALS_CHANNEL = 1575286316000870440
 GUIDELINES = "guidelines"
 PANEL_TITLES = {SUPPORT: "# Evoke Support", REQUIREMENTS: "# Join Evoke", CAREERS: "# Evoke Careers",
                 SOCIALS: "# Evoke Socials", GUIDELINES: "# Evoke Guidelines"}
@@ -446,7 +447,7 @@ async def post_panel_command(message):
     if not (message.author.guild_permissions.manage_guild or any(r.id == STAFF for r in message.author.roles)):
         await message.reply("Only Evoke staff or members with Manage Server can post panels.", mention_author=False)
         return True
-    target_id = {GUIDELINES: RULES_CHANNEL, "partners": PARTNER_CHANNEL}.get(destination)
+    target_id = {GUIDELINES: RULES_CHANNEL, SOCIALS: SOCIALS_CHANNEL, "partners": PARTNER_CHANNEL}.get(destination)
     channel = guild.get_channel(target_id) if target_id else message.channel
     if not isinstance(channel, discord.TextChannel):
         await message.reply("Run this command in a server text channel.", mention_author=False)
@@ -487,12 +488,11 @@ def public_panel(channel):
     support_location = "the Evoke Support panel"
     if channel == SOCIALS:
         return panel(PANEL_TITLES[SOCIALS],
-                     "Find Evoke’s competitive profile, follow the team, or join the Discord.",
-                     ui.ActionRow(ui.Button(label="Fortnite Tracker", url="https://fortnitetracker.com/esports/organization/evoke-esports"),
-                                  ui.Button(label="X", url="https://x.com/EvokeEsport"),
-                                  ui.Button(label="YouTube", url="https://www.youtube.com/@Evokeesportsofficial")),
-                     ui.ActionRow(ui.Button(label="TikTok", url="https://www.tiktok.com/@officalevoke"),
-                                  ui.Button(label="Discord", url="https://discord.gg/evokeesports")))
+                     "Follow Evoke Esports for team updates, clips, and videos.",
+                     ui.ActionRow(ui.Button(label="X", url="https://x.com/evokeesport?s=11"),
+                                  ui.Button(label="TikTok", url="https://www.tiktok.com/@evoke.esports?_r=1&_t=ZP-9BiS7VZhSnO")),
+                     ui.ActionRow(ui.Button(label="YouTube", url="https://youtube.com/@evokeesports-e7s?si=OryC7JluuBFWTjXp"),
+                                  ui.Button(label="Instagram", url="https://www.instagram.com/evokeesports01?avpt=c2dlYzI0ZDYybjA1&utm_source=qr")))
     if channel == GUIDELINES:
         return panel(PANEL_TITLES[GUIDELINES],
                      "These rules apply in Discord, in competition, and wherever you represent Evoke.",
@@ -939,6 +939,13 @@ async def on_ready():
                     log.info("Rules panel ready %s", rules_message.jump_url)
                 except discord.HTTPException:
                     log.exception("Rules panel setup failed")
+            try:
+                socials_channel = await guild.fetch_channel(SOCIALS_CHANNEL)
+                if isinstance(socials_channel, discord.TextChannel):
+                    socials_message = await publish_public_panel(socials_channel, SOCIALS)
+                    log.info("Socials panel ready %s", socials_message.jump_url)
+            except discord.HTTPException:
+                log.exception("Could not publish socials in %s", SOCIALS_CHANNEL)
             panel_locations["partners"] = PARTNER_CHANNEL
             for kind, channel_id in panel_locations.items():
                 channel = guild.get_channel(channel_id)
