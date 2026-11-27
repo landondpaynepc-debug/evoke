@@ -892,6 +892,7 @@ async def collect_activity():
 
 async def on_voice_state_update(member, before, after):
     if member.guild.id == GUILD_ID:
+        await audit_voice(member, before, after)
         activity_stats.voice_event(member, before, after)
         await voice_rooms.voice_event(member, before, after)
 
@@ -959,6 +960,13 @@ async def on_ready():
                      bool(guild.get_role(REVIEWERS)), bool(guild.get_channel(REVIEW_LOG)))
         else:
             log.warning("Evoke Systems %s is not connected to guild %s", client.user.id, GUILD_ID)
+    audit_channel = client.get_channel(AUDIT_CHANNEL)
+    if isinstance(audit_channel, discord.TextChannel) and audit_channel.guild.id == GUILD_ID:
+        audit_log.info("Audit destination %s public=%s send=%s", AUDIT_CHANNEL,
+                       audit_channel.permissions_for(audit_channel.guild.default_role).view_channel,
+                       audit_channel.permissions_for(audit_channel.guild.me).send_messages)
+    else:
+        audit_log.warning("Audit channel %s unavailable", AUDIT_CHANNEL)
     log.info("Connected as %s", client.user)
 
 
@@ -1035,6 +1043,7 @@ async def assign_join_role(member):
 
 
 async def on_member_join(member):
+    await audit_event(member.guild.id, "Member joined", f"<@{member.id}> · `{member.id}`")
     if member.guild.id == GUILD_ID:
         if member.guild.get_role(JOIN_ROLE):
             await assign_join_role(member)
@@ -1042,6 +1051,7 @@ async def on_member_join(member):
 
 
 async def on_message(message):
+    await audit_message(message)
     if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
         try:
             if await post_panel_command(message):
@@ -1070,6 +1080,150 @@ async def health(request):
                         status=200 if client.is_ready() else 503)
 
 
+AUDIT_CHANNEL = 1575689116136513646
+audit_log = logging.getLogger("evoke.audit")
+
+
+async def audit_event(guild_id, title, details):
+    if guild_id != GUILD_ID:
+        return
+    channel = client.get_channel(AUDIT_CHANNEL)
+    if not isinstance(channel, discord.TextChannel) or channel.guild.id != guild_id:
+        return
+    if channel.permissions_for(channel.guild.default_role).view_channel:
+        return
+    view = ui.LayoutView(timeout=None)
+    view.add_item(ui.Container(ui.TextDisplay(f"## {title}"), ui.TextDisplay(details[:3700]),
+                               ui.TextDisplay(f"-# <t:{int(discord.utils.utcnow().timestamp())}:F>")))
+    try:
+        await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+        audit_log.exception("Could not deliver %s to audit channel", title)
+
+
+def audit_content_visible(message):
+    channel = message.channel
+    return (not (isinstance(channel, discord.Thread) and channel.is_private())
+            and channel.permissions_for(message.guild.default_role).view_channel)
+
+
+def audit_content(message):
+    if not audit_content_visible(message):
+        return "Content hidden for restricted channels."
+    content = discord.utils.escape_markdown(message.content[:700]) or "(No text)"
+    return f"{content}\nAttachments: {len(message.attachments)}"
+
+
+async def audit_message(message):
+    if message.guild and message.guild.id == GUILD_ID and not message.author.bot and message.channel.id != AUDIT_CHANNEL:
+        await audit_event(message.guild.id, "Message sent",
+                          f"<@{message.author.id}> in {message.channel.mention}\n"
+                          f"[Open message]({message.jump_url})\n{audit_content(message)}")
+
+
+async def on_raw_message_delete(event):
+    if event.guild_id != GUILD_ID or event.channel_id == AUDIT_CHANNEL:
+        return
+    msg = event.cached_message
+    if msg and msg.author.bot:
+        return
+    details = f"Channel <#{event.channel_id}> · Message `{event.message_id}`"
+    if msg:
+        details += f"\nAuthor <@{msg.author.id}>\n{audit_content(msg)}"
+    await audit_event(event.guild_id, "Message deleted", details)
+
+
+async def on_raw_bulk_message_delete(event):
+    if event.channel_id != AUDIT_CHANNEL:
+        await audit_event(event.guild_id, "Messages bulk deleted",
+                          f"{len(event.message_ids)} messages removed from <#{event.channel_id}>.")
+
+
+async def on_raw_message_edit(event):
+    if event.guild_id != GUILD_ID or event.channel_id == AUDIT_CHANNEL:
+        return
+    author = event.data.get("author") or {}
+    before = event.cached_message
+    if "edited_timestamp" not in event.data or author.get("bot") or (before and before.author.bot):
+        return
+    details = f"Channel <#{event.channel_id}> · [Open message](https://discord.com/channels/{GUILD_ID}/{event.channel_id}/{event.message_id})"
+    if before:
+        details += f"\nAuthor <@{before.author.id}>"
+        if audit_content_visible(before):
+            details += f"\n**Before**\n{audit_content(before)}"
+            if "content" in event.data:
+                details += "\n**After**\n" + discord.utils.escape_markdown(event.data["content"][:700])
+    await audit_event(event.guild_id, "Message edited", details)
+
+
+async def on_member_remove(member):
+    await audit_event(member.guild.id, "Member left", f"<@{member.id}> · `{member.id}`")
+
+
+async def on_member_update(before, after):
+    if after.guild.id != GUILD_ID:
+        return
+    added = sorted(set(after.roles) - set(before.roles), key=lambda role: role.id)
+    removed = sorted(set(before.roles) - set(after.roles), key=lambda role: role.id)
+    changes = []
+    if added:
+        changes.append("Added " + ", ".join(role.mention for role in added))
+    if removed:
+        changes.append("Removed " + ", ".join(role.mention for role in removed))
+    if before.nick != after.nick:
+        changes.append("Nickname changed.")
+    if before.timed_out_until != after.timed_out_until:
+        changes.append("Timeout updated." if after.timed_out_until else "Timeout removed.")
+    if changes:
+        await audit_event(after.guild.id, "Member updated", f"<@{after.id}>\n" + "\n".join(changes))
+
+
+async def on_guild_role_create(role):
+    await audit_event(role.guild.id, "Role created", f"{role.mention} · `{role.id}`")
+
+
+async def on_guild_role_delete(role):
+    await audit_event(role.guild.id, "Role deleted", f"{discord.utils.escape_markdown(role.name)} · `{role.id}`")
+
+
+async def on_guild_role_update(before, after):
+    await audit_event(after.guild.id, "Role updated", f"{after.mention} · `{after.id}`")
+
+
+async def on_guild_channel_create(channel):
+    await audit_event(channel.guild.id, "Channel created", f"<#{channel.id}> · `{channel.id}`")
+
+
+async def on_guild_channel_delete(channel):
+    await audit_event(channel.guild.id, "Channel deleted", f"Channel ID `{channel.id}`")
+
+
+async def on_guild_channel_update(before, after):
+    await audit_event(after.guild.id, "Channel updated", f"<#{after.id}> · `{after.id}`")
+
+
+async def on_member_ban(guild, user):
+    await audit_event(guild.id, "Member banned", f"<@{user.id}> · `{user.id}`")
+
+
+async def on_member_unban(guild, user):
+    await audit_event(guild.id, "Member unbanned", f"<@{user.id}> · `{user.id}`")
+
+
+async def audit_voice(member, before, after):
+    changes = []
+    if before.channel != after.channel:
+        previous = before.channel.mention if before.channel else "Disconnected"
+        current = after.channel.mention if after.channel else "Disconnected"
+        changes.append(f"{previous} → {current}")
+    for field, label in (("self_mute", "Self mute"), ("self_deaf", "Self deafen"), ("mute", "Server mute"),
+                         ("deaf", "Server deafen"), ("self_stream", "Stream"), ("self_video", "Camera")):
+        if getattr(before, field) != getattr(after, field):
+            changes.append(f"{label} {'on' if getattr(after, field) else 'off'}")
+    if changes:
+        await audit_event(member.guild.id, "Voice activity", f"<@{member.id}>\n" + "\n".join(changes))
+
+
 async def main():
     global client
     token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
@@ -1082,10 +1236,14 @@ async def main():
         content_access = flags.gateway_message_content or flags.gateway_message_content_limited
     log.info("Discord message content access: %s", content_access)
     intents = discord.Intents(guilds=True, members=member_events, guild_messages=True, voice_states=True,
-                             message_content=content_access)
+                             message_content=content_access, moderation=True)
     client = discord.Client(intents=intents, allowed_mentions=discord.AllowedMentions.none(),
                             chunk_guilds_at_startup=False)
-    for event in (on_interaction, on_ready, on_member_join, on_message, on_voice_state_update, on_disconnect):
+    for event in (on_interaction, on_ready, on_member_join, on_message, on_voice_state_update, on_disconnect,
+                  on_raw_message_edit, on_raw_message_delete, on_raw_bulk_message_delete,
+                  on_member_remove, on_member_update, on_member_ban, on_member_unban,
+                  on_guild_role_create, on_guild_role_delete, on_guild_role_update,
+                  on_guild_channel_create, on_guild_channel_delete, on_guild_channel_update):
         client.event(event)
     app = web.Application()
     app.router.add_get("/", health)
