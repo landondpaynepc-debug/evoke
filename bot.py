@@ -1224,6 +1224,54 @@ async def audit_voice(member, before, after):
         await audit_event(member.guild.id, "Voice activity", f"<@{member.id}>\n" + "\n".join(changes))
 
 
+async def membercount(interaction: discord.Interaction):
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("Use this command in the Evoke server.", ephemeral=True)
+        return
+
+    count = guild.member_count
+    boosts = guild.premium_subscription_count
+    tier = guild.premium_tier
+    if count is None or boosts is None:
+        await interaction.response.defer()
+        try:
+            snapshot = await interaction.client.fetch_guild(guild.id, with_counts=True)
+        except discord.HTTPException:
+            log.warning("Could not refresh member stats for guild %s", guild.id)
+        else:
+            if count is None:
+                count = snapshot.approximate_member_count
+            boosts = snapshot.premium_subscription_count
+            tier = snapshot.premium_tier
+
+    member_value = f"{count:,}" if count is not None else "Unavailable"
+    boost_value = f"{boosts:,} (Level {tier})" if boosts is not None else "Unavailable"
+    view = ui.LayoutView()
+    view.add_item(ui.Container(ui.TextDisplay(
+        f"👥 **Members:** {member_value}\n🎮 **Server Boosts:** {boost_value}"
+    )))
+    if interaction.response.is_done():
+        await interaction.edit_original_response(view=view)
+    else:
+        await interaction.response.send_message(view=view)
+
+
+class EvokeClient(discord.Client):
+    async def setup_hook(self):
+        tree = discord.app_commands.CommandTree(self)
+        guild = discord.Object(id=GUILD_ID)
+        tree.command(name="membercount", description="Show the server member count and boost level.",
+                     guild=guild)(membercount)
+        try:
+            commands = await tree.sync(guild=guild)
+        except discord.HTTPException:
+            log.exception("Could not register /membercount in guild %s", GUILD_ID)
+        else:
+            log.info("Registered slash commands in guild %s: %s",
+                     GUILD_ID, ", ".join(command.name for command in commands))
+
+
 async def main():
     global client
     token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
@@ -1237,7 +1285,7 @@ async def main():
     log.info("Discord message content access: %s", content_access)
     intents = discord.Intents(guilds=True, members=member_events, guild_messages=True, voice_states=True,
                              message_content=content_access, moderation=True)
-    client = discord.Client(intents=intents, allowed_mentions=discord.AllowedMentions.none(),
+    client = EvokeClient(intents=intents, allowed_mentions=discord.AllowedMentions.none(),
                             chunk_guilds_at_startup=False)
     for event in (on_interaction, on_ready, on_member_join, on_message, on_voice_state_update, on_disconnect,
                   on_raw_message_edit, on_raw_message_delete, on_raw_bulk_message_delete,
